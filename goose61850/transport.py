@@ -29,6 +29,7 @@ def _build_frame(
     app_id: int,
     pdu: GoosePDU,
     vlan_id: Optional[int] = None,
+    vlan_priority: Optional[int] = None,
 ) -> bytes:
     payload = encode_goose_pdu(pdu)
 
@@ -40,7 +41,8 @@ def _build_frame(
 
     eth = Ether(dst=_mac_str(dst_mac), src=_mac_str(src_mac))
     if vlan_id is not None:
-        pkt = eth / Dot1Q(vlan=vlan_id, type=GOOSE_ETHERTYPE) / Raw(goose_header + payload)
+        prio = 0 if vlan_priority is None else int(vlan_priority)
+        pkt = eth / Dot1Q(prio=prio, vlan=vlan_id, type=GOOSE_ETHERTYPE) / Raw(goose_header + payload)
     else:
         pkt = eth / Raw(goose_header + payload)
     return bytes(pkt)
@@ -54,6 +56,7 @@ class GoosePublisher:
     src_mac: str
     app_id: int
     vlan_id: Optional[int] = None
+    vlan_priority: Optional[int] = None
 
     def send(
         self,
@@ -69,6 +72,7 @@ class GoosePublisher:
             app_id=self.app_id,
             pdu=pdu,
             vlan_id=self.vlan_id,
+            vlan_priority=self.vlan_priority,
         )
         sendp(raw, iface=self.iface, count=count, inter=inter, verbose=False)
 

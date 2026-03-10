@@ -71,6 +71,12 @@ def main() -> None:
         default=None,
         help="VLAN ID (802.1Q). Si omis, trame non tagguée.",
     )
+    parser.add_argument(
+        "--vlan-priority",
+        type=int,
+        default=None,
+        help="Priorité VLAN (0-7). Si omis, priorité 0.",
+    )
 
     # Champs GOOSE principaux
     parser.add_argument(
@@ -163,6 +169,27 @@ def main() -> None:
         action="store_true",
         help="Incrémente automatiquement sqNum à chaque trame envoyée.",
     )
+    parser.add_argument(
+        "--iec-profile",
+        action="store_true",
+        help=(
+            "Applique une loi de temporisation IEC 61850 simple "
+            "(intervalle qui double entre --iec-min-ms et --iec-max-ms). "
+            "Utilisé uniquement avec --auto-sq."
+        ),
+    )
+    parser.add_argument(
+        "--iec-min-ms",
+        type=int,
+        default=10,
+        help="Intervalle minimal IEC en millisecondes (par défaut: 10 ms).",
+    )
+    parser.add_argument(
+        "--iec-max-ms",
+        type=int,
+        default=2000,
+        help="Intervalle maximal IEC en millisecondes (par défaut: 2000 ms).",
+    )
 
     args = parser.parse_args()
 
@@ -173,6 +200,7 @@ def main() -> None:
         src_mac=args.src_mac,
         app_id=args.appid,
         vlan_id=args.vlan_id,
+        vlan_priority=args.vlan_priority,
     )
 
     print(
@@ -192,16 +220,34 @@ def main() -> None:
     else:
         # Mode GOOSE-like : on incrémente sqNum à chaque trame.
         base_sq = args.sq_num
-        for i in range(args.count):
-            pdu.sq_num = base_sq + i
-            publisher.send(
-                dst_mac=args.dst_mac,
-                pdu=pdu,
-                count=1,
-                inter=0.0,
-            )
-            if args.interval > 0 and i < args.count - 1:
-                time.sleep(args.interval)
+
+        if args.iec_profile:
+            # Profil simple IEC 61850: on part de iec-min, puis on double jusqu'à iec-max.
+            current_interval = max(args.iec_min_ms, 1) / 1000.0
+            max_interval = max(args.iec_max_ms, args.iec_min_ms) / 1000.0
+
+            for i in range(args.count):
+                pdu.sq_num = base_sq + i
+                publisher.send(
+                    dst_mac=args.dst_mac,
+                    pdu=pdu,
+                    count=1,
+                    inter=0.0,
+                )
+                if i < args.count - 1:
+                    time.sleep(current_interval)
+                    current_interval = min(current_interval * 2.0, max_interval)
+        else:
+            for i in range(args.count):
+                pdu.sq_num = base_sq + i
+                publisher.send(
+                    dst_mac=args.dst_mac,
+                    pdu=pdu,
+                    count=1,
+                    inter=0.0,
+                )
+                if args.interval > 0 and i < args.count - 1:
+                    time.sleep(args.interval)
 
 
 if __name__ == "__main__":
