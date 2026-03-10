@@ -28,6 +28,7 @@ def _build_frame(
     src_mac: str,
     app_id: int,
     pdu: GoosePDU,
+    vlan_id: Optional[int] = None,
 ) -> bytes:
     payload = encode_goose_pdu(pdu)
 
@@ -37,8 +38,11 @@ def _build_frame(
     reserved = b"\x00\x00\x00\x00"
     goose_header = app_id_bytes + length_bytes + reserved
 
-    eth = Ether(dst=_mac_str(dst_mac), src=_mac_str(src_mac), type=GOOSE_ETHERTYPE)
-    pkt = eth / Raw(goose_header + payload)
+    eth = Ether(dst=_mac_str(dst_mac), src=_mac_str(src_mac))
+    if vlan_id is not None:
+        pkt = eth / Dot1Q(vlan=vlan_id, type=GOOSE_ETHERTYPE) / Raw(goose_header + payload)
+    else:
+        pkt = eth / Raw(goose_header + payload)
     return bytes(pkt)
 
 
@@ -49,6 +53,7 @@ class GoosePublisher:
     iface: str
     src_mac: str
     app_id: int
+    vlan_id: Optional[int] = None
 
     def send(
         self,
@@ -58,7 +63,13 @@ class GoosePublisher:
         inter: float = 0.0,
     ) -> None:
         """Envoie une ou plusieurs trames GOOSE."""
-        raw = _build_frame(dst_mac=dst_mac, src_mac=self.src_mac, app_id=self.app_id, pdu=pdu)
+        raw = _build_frame(
+            dst_mac=dst_mac,
+            src_mac=self.src_mac,
+            app_id=self.app_id,
+            pdu=pdu,
+            vlan_id=self.vlan_id,
+        )
         sendp(raw, iface=self.iface, count=count, inter=inter, verbose=False)
 
 
