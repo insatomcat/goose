@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
+import time
 from datetime import datetime, timezone
 from typing import List
 
@@ -157,6 +158,11 @@ def main() -> None:
         default=0.0,
         help="Intervalle entre trames (en secondes).",
     )
+    parser.add_argument(
+        "--auto-sq",
+        action="store_true",
+        help="Incrémente automatiquement sqNum à chaque trame envoyée.",
+    )
 
     args = parser.parse_args()
 
@@ -175,13 +181,27 @@ def main() -> None:
         f"APPID=0x{args.appid:04X} vlan={args.vlan_id if args.vlan_id is not None else '-'} "
         f"gocbRef={args.gocb_ref} goID={args.go_id} count={args.count}",
     )
-
-    publisher.send(
-        dst_mac=args.dst_mac,
-        pdu=pdu,
-        count=args.count,
-        inter=args.interval,
-    )
+    # Mode simple : on laisse scapy gérer le count/inter, sqNum reste fixe.
+    if not args.auto_sq:
+        publisher.send(
+            dst_mac=args.dst_mac,
+            pdu=pdu,
+            count=args.count,
+            inter=args.interval,
+        )
+    else:
+        # Mode GOOSE-like : on incrémente sqNum à chaque trame.
+        base_sq = args.sq_num
+        for i in range(args.count):
+            pdu.sq_num = base_sq + i
+            publisher.send(
+                dst_mac=args.dst_mac,
+                pdu=pdu,
+                count=1,
+                inter=0.0,
+            )
+            if args.interval > 0 and i < args.count - 1:
+                time.sleep(args.interval)
 
 
 if __name__ == "__main__":
