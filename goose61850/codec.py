@@ -141,13 +141,19 @@ def decode_goose_pdu(payload: bytes) -> GoosePDU:
     Ethernet / VLAN / APPID / length / reserved).
     """
     tlvs: List[Tuple[int, bytes]] = []
-    offset = 0
 
-    # Le PDU GOOSE est lui-même une séquence (tag universel 0x30) contenant
-    # les champs ci‑dessus ; on parcourt récursivement les TLV.
-    # Pour rester générique, on lit simplement jusqu'à la fin du buffer.
-    while offset < len(payload):
-        tag, length, value, offset = _read_tlv(payload, offset)
+    # Le PDU GOOSE est encapsulé dans un tag d'application (0x61) qui contient
+    # lui‑même la séquence de champs contextuels [0]..[11]. On commence donc
+    # par lire ce premier TLV, puis on parse récursivement son contenu.
+    if not payload:
+        raise ASN1DecodeError("PDU vide")
+
+    outer_tag, _outer_len, outer_value, _ = _read_tlv(payload, 0)
+
+    # outer_value contient la vraie séquence de champs GOOSE
+    offset = 0
+    while offset < len(outer_value):
+        tag, length, value, offset = _read_tlv(outer_value, offset)
         tlvs.append((tag, value))
 
     fields = _parse_goose_fields(tlvs)

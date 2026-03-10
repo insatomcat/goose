@@ -58,6 +58,11 @@ def main() -> None:
         default=None,
         help="Filtre sur goID (chaîne exacte). Si omis, accepte tous les goID.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Affiche des informations de debug sur chaque paquet capturé.",
+    )
 
     args = parser.parse_args()
 
@@ -76,6 +81,7 @@ def main() -> None:
         iface=args.iface,
         app_id=args.app_id,
         callback=on_frame,
+        debug=args.debug,
     )
 
     print(

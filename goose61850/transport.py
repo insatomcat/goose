@@ -7,6 +7,7 @@ from typing import Callable, Optional
 from scapy.all import (  # type: ignore[import-untyped]
     Ether,
     Raw,
+    Dot1Q,
     sendp,
     sniff,
 )
@@ -69,6 +70,7 @@ class GooseSubscriber:
         iface: str,
         app_id: Optional[int] = None,
         callback: Optional[Callable[[GooseFrame], None]] = None,
+        debug: bool = False,
     ) -> None:
         """
         - `iface` : nom de l'interface (ex: "eth0").
@@ -78,15 +80,51 @@ class GooseSubscriber:
         self.iface = iface
         self.app_id = app_id
         self.callback = callback
+        self.debug = debug
 
     def _handle_pkt(self, pkt) -> None:  # type: ignore[no-untyped-def]
-        if not pkt.haslayer(Ether):
-            return
-        eth = pkt[Ether]
-        if eth.type != GOOSE_ETHERTYPE:
-            return
+        """Callback scapy pour chaque paquet sniffé.
 
-        payload = bytes(eth.payload)
+        On essaie d'abord de récupérer une couche Ether, mais certains OS
+        (ou certaines interfaces) renvoient des trames au format "Cooked"
+        sans cette couche. Dans ce cas, on vérifie directement le champ type.
+        """
+        if self.debug:
+            # résumé très court pour ne pas spammer de données brutes
+            print(f"[DEBUG] pkt: {pkt.summary()}")
+
+        eth = pkt.getlayer(Ether)
+        if eth is None:
+            # mode "Cooked" ou autre encapsulation : on regarde directement le type
+            if not hasattr(pkt, "type"):
+                return
+            # si c'est directement du GOOSE sur cette interface
+            if pkt.type == GOOSE_ETHERTYPE:
+                payload = bytes(pkt.payload)
+                src_mac = getattr(pkt, "src", "unknown")
+                dst_mac = getattr(pkt, "dst", "unknown")
+                ethertype = pkt.type
+            else:
+                return
+        else:
+            # Gestion des trames VLAN-tagguées : Ether(type=0x8100) / Dot1Q(type=0x88B8)
+            if eth.type == 0x8100 and pkt.haslayer(Dot1Q):
+                dot1q = pkt[Dot1Q]
+                if dot1q.type != GOOSE_ETHERTYPE:
+                    return
+                payload = bytes(dot1q.payload)
+                src_mac = str(eth.src)
+                dst_mac = str(eth.dst)
+                ethertype = dot1q.type
+            else:
+                # Trame non VLAN : on s'attend à voir directement l'EtherType GOOSE
+                if eth.type != GOOSE_ETHERTYPE:
+                    return
+                payload = bytes(eth.payload)
+                src_mac = str(eth.src)
+                dst_mac = str(eth.dst)
+                ethertype = eth.type
+
         if len(payload) < 8:
             return
 
@@ -106,11 +144,11 @@ class GooseSubscriber:
             pdu = None
 
         frame = GooseFrame(
-            dst_mac=str(eth.dst),
-            src_mac=str(eth.src),
+            dst_mac=dst_mac,
+            src_mac=src_mac,
             app_id=app_id,
             vlan_id=None,  # géré par scapy en amont si nécessaire
-            ethertype=eth.type,
+            ethertype=ethertype,
             raw_payload=goose_payload,
             pdu=pdu,
         )
@@ -131,6 +169,7 @@ class GooseSubscriber:
             store=False,
             timeout=timeout,
             count=count if count > 0 else 0,
+            # pas de filtre BPF pour laisser passer tout type de trames
         )
 
 
