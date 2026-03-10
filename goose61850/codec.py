@@ -120,9 +120,21 @@ def _parse_goose_fields(tlvs: List[Tuple[int, bytes]]) -> Dict[str, Any]:
         elif tag_num == 10:
             fields["num_dat_set_entries"] = _decode_integer(value)
         elif tag_num == 11:
-            # Pour rester simple, on stocke la séquence brute ; l’utilisateur
-            # pourra la décoder plus finement au besoin.
-            all_data.append(value)
+            # allData est lui-même une séquence de TLV ; on essaie de décoder
+            # chaque élément en bool/int/str selon un schéma simple.
+            inner_offset = 0
+            while inner_offset < len(value):
+                inner_tag, _inner_len, inner_val, inner_offset = _read_tlv(value, inner_offset)
+                inner_tag_num = inner_tag & 0x1F
+                if inner_tag_num == 1:
+                    all_data.append(_decode_boolean(inner_val))
+                elif inner_tag_num == 2:
+                    all_data.append(_decode_integer(inner_val))
+                elif inner_tag_num == 3:
+                    all_data.append(_decode_visible_string(inner_val))
+                else:
+                    # type inconnu : on expose la valeur brute en hex
+                    all_data.append(inner_val.hex())
         else:
             # Champ inconnu : on le stocke dans un dict annexe si besoin plus tard
             unk = fields.setdefault("_unknown", [])
@@ -259,5 +271,16 @@ def encode_goose_pdu(pdu: GoosePDU) -> bytes:
     if all_data_content:
         parts.append(enc_tag(11, all_data_content))
 
-    return b"".join(parts)
+    # Assemblage des champs GOOSE dans le conteneur d'application 0x61
+    inner = b"".join(parts)
+    outer_tag = 0x61  # [APPLICATION 1], construit
+    inner_len = len(inner)
+    if inner_len < 0x80:
+        len_bytes = bytes([inner_len])
+    else:
+        tmp = inner_len.to_bytes(4, "big")
+        tmp = tmp.lstrip(b"\x00")
+        len_bytes = bytes([0x80 | len(tmp)]) + tmp
+
+    return bytes([outer_tag]) + len_bytes + inner
 
