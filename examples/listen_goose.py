@@ -2,8 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import pathlib
+import sys
 from datetime import datetime
 from typing import Optional
+
+# Ajoute la racine du dépôt au sys.path pour pouvoir importer goose61850
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from goose61850 import GooseSubscriber
 from goose61850.types import GooseFrame
