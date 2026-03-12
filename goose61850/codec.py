@@ -89,6 +89,13 @@ def _parse_goose_fields(tlvs: List[Tuple[int, bytes]]) -> Dict[str, Any]:
       9: ndsCom (Boolean)
       10: numDatSetEntries (Integer)
       11: allData (séquence de valeurs)
+
+    Pour les éléments de allData :
+      - Booléen (inner_tag_num == 1)  -> bool Python
+      - Entier  (inner_tag_num == 2)  -> int Python
+      - Texte   (inner_tag_num == 3)  -> str Python (VisibleString)
+      - Autre   (inner_tag_num != 1/2/3) -> tuple bijectif :
+            ("raw", inner_tag_num, <hex bytes>)
     """
     fields: Dict[str, Any] = {}
     all_data: List[Any] = []
@@ -133,8 +140,9 @@ def _parse_goose_fields(tlvs: List[Tuple[int, bytes]]) -> Dict[str, Any]:
                 elif inner_tag_num == 3:
                     all_data.append(_decode_visible_string(inner_val))
                 else:
-                    # type inconnu : on expose la valeur brute en hex
-                    all_data.append(inner_val.hex())
+                    # Type inconnu : on expose une représentation bijective :
+                    # ("raw", inner_tag_num, "<hex>")
+                    all_data.append(("raw", inner_tag_num, inner_val.hex()))
         else:
             # Champ inconnu : on le stocke dans un dict annexe si besoin plus tard
             unk = fields.setdefault("_unknown", [])
@@ -257,7 +265,23 @@ def encode_goose_pdu(pdu: GoosePDU) -> bytes:
     # entier ou une chaîne VisibleString selon son type Python.
     all_data_content = b""
     for d in pdu.all_data:
-        if isinstance(d, bool):
+        # Cas spécial : valeur "brute" venant du décodage ou de la CLI,
+        # encodée sous la forme ("raw", tag_num, "hexbytes").
+        if (
+            isinstance(d, tuple)
+            and len(d) == 3
+            and d[0] == "raw"
+            and isinstance(d[1], int)
+            and isinstance(d[2], str)
+        ):
+            tag_num = d[1]
+            try:
+                content = bytes.fromhex(d[2])
+            except ValueError:
+                # En cas d'hex invalide, on retombe sur un encodage texte
+                tag_num = 3
+                content = enc_visible_string(str(d))
+        elif isinstance(d, bool):
             tag_num = 1
             content = enc_boolean(d)
         elif isinstance(d, int):

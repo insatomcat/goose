@@ -54,8 +54,9 @@ def build_pdu_from_args(args: argparse.Namespace) -> GoosePDU:
     all_data: List[object] = []
 
     # Nouveau mode : --value TYPE:VALEUR (préserve strictement l'ordre des FCDA).
-    # TYPE ∈ {b,bool,i,int,s,str}. Exemple :
+    # TYPE ∈ {b,bool,i,int,s,str,raw}. Exemple :
     #   --value b:1 --value i:0 --value s:OR1
+    #   --value raw:4:0680  (valeur binaire brute : tag 4, octets 06 80)
     if getattr(args, "value", None):
         typed_values: List[Tuple[str, str]] = []
         for raw in args.value:
@@ -72,8 +73,22 @@ def build_pdu_from_args(args: argparse.Namespace) -> GoosePDU:
             elif t in ("s", "str"):
                 # On autorise l'écriture de littéraux échappés, ex: "\\x00"
                 all_data.append(_unescape_string_literal(v))
+            elif t in ("r", "raw"):
+                # Format attendu : TAG:HEX (ex: "4:0680")
+                if ":" not in v:
+                    raise ValueError(
+                        f"Valeur --value raw invalide (attendu TAG:HEX) : {v!r}"
+                    )
+                tag_str, hex_str = v.split(":", 1)
+                tag_num = int(tag_str, 0)
+                hex_clean = hex_str.strip()
+                # On laisse la validation de l'hex côté encodeur (bytes.fromhex),
+                # ici on ne fait qu'enregistrer une structure bijective.
+                all_data.append(("raw", tag_num, hex_clean))
             else:
-                raise ValueError(f"Type --value inconnu : {t!r} (attendu b/bool/i/int/s/str)")
+                raise ValueError(
+                    f"Type --value inconnu : {t!r} (attendu b/bool/i/int/s/str/raw)"
+                )
 
     # Ancien mode (compatibilité) : --bool / --int / --str, regroupés par type.
     # Si --value est fourni, ces options supplémentaires sont ignorées.
@@ -200,8 +215,9 @@ def main() -> None:
         action="append",
         help=(
             "Ajoute une valeur typée à allData en respectant l'ordre (répétable). "
-            "Format: TYPE:VALEUR avec TYPE ∈ {b,bool,i,int,s,str}, "
-            "ex: --value b:1 --value i:0 --value s:OR1. "
+            "Format: TYPE:VALEUR avec TYPE ∈ {b,bool,i,int,s,str,raw}, "
+            "ex: --value b:1 --value i:0 --value s:OR1, "
+            "ou --value raw:TAG:HEX pour une valeur binaire brute (ex: raw:4:0680). "
             "Si --value est utilisé, les options --bool/--int/--str sont ignorées."
         ),
     )
