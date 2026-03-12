@@ -6,7 +6,7 @@ import pathlib
 import sys
 import time
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Tuple
 
 # Ajoute la racine du dépôt au sys.path pour pouvoir importer goose61850
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -19,17 +19,41 @@ from goose61850 import GoosePDU, GoosePublisher  # type: ignore[import-not-found
 def build_pdu_from_args(args: argparse.Namespace) -> GoosePDU:
     all_data: List[object] = []
 
-    if args.bool is not None:
-        for v in args.bool:
-            all_data.append(v.lower() in ("1", "true", "t", "yes", "y"))
+    # Nouveau mode : --value TYPE:VALEUR (préserve strictement l'ordre des FCDA).
+    # TYPE ∈ {b,bool,i,int,s,str}. Exemple :
+    #   --value b:1 --value i:0 --value s:OR1
+    if getattr(args, "value", None):
+        typed_values: List[Tuple[str, str]] = []
+        for raw in args.value:
+            if ":" not in raw:
+                raise ValueError(f"Valeur --value invalide (attendu TYPE:VALEUR) : {raw!r}")
+            type_prefix, val = raw.split(":", 1)
+            typed_values.append((type_prefix.strip().lower(), val))
 
-    if args.int is not None:
-        for v in args.int:
-            all_data.append(int(v, 0))
+        for t, v in typed_values:
+            if t in ("b", "bool"):
+                all_data.append(v.lower() in ("1", "true", "t", "yes", "y"))
+            elif t in ("i", "int"):
+                all_data.append(int(v, 0))
+            elif t in ("s", "str"):
+                all_data.append(v)
+            else:
+                raise ValueError(f"Type --value inconnu : {t!r} (attendu b/bool/i/int/s/str)")
 
-    if args.str is not None:
-        for v in args.str:
-            all_data.append(v)
+    # Ancien mode (compatibilité) : --bool / --int / --str, regroupés par type.
+    # Si --value est fourni, ces options supplémentaires sont ignorées.
+    elif args.bool is not None or args.int is not None or args.str is not None:
+        if args.bool is not None:
+            for v in args.bool:
+                all_data.append(v.lower() in ("1", "true", "t", "yes", "y"))
+
+        if args.int is not None:
+            for v in args.int:
+                all_data.append(int(v, 0))
+
+        if args.str is not None:
+            for v in args.str:
+                all_data.append(v)
 
     now = datetime.now(timezone.utc)
 
@@ -136,6 +160,16 @@ def main() -> None:
     )
 
     # Contenu de allData
+    parser.add_argument(
+        "--value",
+        action="append",
+        help=(
+            "Ajoute une valeur typée à allData en respectant l'ordre (répétable). "
+            "Format: TYPE:VALEUR avec TYPE ∈ {b,bool,i,int,s,str}, "
+            "ex: --value b:1 --value i:0 --value s:OR1. "
+            "Si --value est utilisé, les options --bool/--int/--str sont ignorées."
+        ),
+    )
     parser.add_argument(
         "--bool",
         action="append",
