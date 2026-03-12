@@ -203,8 +203,22 @@ def encode_goose_pdu(pdu: GoosePDU) -> bytes:
     """
 
     def enc_tag(tag_num: int, content: bytes) -> bytes:
-        # Classe contexte, construit = 0xA0, puis numéro de tag sur 5 bits
-        tag = 0xA0 | (tag_num & 0x1F)
+        """
+        Encode un tag de contexte pour un champ GOOSE.
+
+        Observations sur des trames SCU réelles :
+          - Les champs simples (0..10) utilisent des tags contexte **primitifs**
+            (0x80..0x8A).
+          - Le champ allData (11) est encodé avec un tag contexte **construit**
+            (0xAB).
+        On reproduit ce comportement ici.
+        """
+        if tag_num == 11:
+            # allData : [CONTEXT | CONSTRUCTED] numéro 11 -> 0xAB
+            tag = 0xA0 | (tag_num & 0x1F)
+        else:
+            # Champs simples : [CONTEXT | PRIMITIVE] -> 0x8n
+            tag = 0x80 | (tag_num & 0x1F)
         length = len(content)
         if length < 0x80:
             len_bytes = bytes([length])
