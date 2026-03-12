@@ -16,6 +16,40 @@ if str(ROOT) not in sys.path:
 from goose61850 import GoosePDU, GoosePublisher  # type: ignore[import-not-found]
 
 
+def _unescape_string_literal(v: str) -> str:
+    r"""
+    Permet d'écrire des séquences d'échappement style '\\x00' dans la ligne
+    de commande, qui seront ensuite converties en vrais octets (ici NUL).
+
+    Cas gérés explicitement :
+      - '\\xNN' (exactement 4 caractères après interprétation Python)
+      - '\\\\xNN' (exactement 5 caractères, fréquent avec le quoting shell)
+    """
+    # Cas simple et explicite : séquence de type \xNN
+    if len(v) == 4 and v[0] == "\\" and v[1] == "x":
+        hex_part = v[2:]
+        try:
+            value = int(hex_part, 16)
+            return bytes([value]).decode("latin1")
+        except ValueError:
+            pass
+
+    # Cas fréquent en ligne de commande : '\\xNN' (deux backslashes)
+    if len(v) == 5 and v[0] == "\\" and v[1] == "\\" and v[2] == "x":
+        hex_part = v[3:]
+        try:
+            value = int(hex_part, 16)
+            return bytes([value]).decode("latin1")
+        except ValueError:
+            pass
+
+    # Fallback générique : meilleure compat possible, sans casser les autres valeurs.
+    try:
+        return v.encode("utf-8").decode("unicode_escape")
+    except Exception:
+        return v
+
+
 def build_pdu_from_args(args: argparse.Namespace) -> GoosePDU:
     all_data: List[object] = []
 
@@ -36,7 +70,8 @@ def build_pdu_from_args(args: argparse.Namespace) -> GoosePDU:
             elif t in ("i", "int"):
                 all_data.append(int(v, 0))
             elif t in ("s", "str"):
-                all_data.append(v)
+                # On autorise l'écriture de littéraux échappés, ex: "\\x00"
+                all_data.append(_unescape_string_literal(v))
             else:
                 raise ValueError(f"Type --value inconnu : {t!r} (attendu b/bool/i/int/s/str)")
 
