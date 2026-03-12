@@ -1,340 +1,233 @@
 #!/usr/bin/env python3
+"""Client CLI pour le service GOOSE : convertit les arguments en requêtes API."""
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import sys
-import time
-from datetime import datetime, timezone
-from typing import List, Tuple
+import urllib.request
+from typing import Any, List
 
-# Ajoute la racine du dépôt au sys.path pour pouvoir importer goose61850
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-from goose61850 import GoosePDU, GoosePublisher  # type: ignore[import-not-found]
 
 
 def _unescape_string_literal(v: str) -> str:
     r"""
     Permet d'écrire des séquences d'échappement style '\\x00' dans la ligne
     de commande, qui seront ensuite converties en vrais octets (ici NUL).
-
-    Cas gérés explicitement :
-      - '\\xNN' (exactement 4 caractères après interprétation Python)
-      - '\\\\xNN' (exactement 5 caractères, fréquent avec le quoting shell)
     """
-    # Cas simple et explicite : séquence de type \xNN
     if len(v) == 4 and v[0] == "\\" and v[1] == "x":
-        hex_part = v[2:]
         try:
-            value = int(hex_part, 16)
-            return bytes([value]).decode("latin1")
+            return bytes([int(v[2:], 16)]).decode("latin1")
         except ValueError:
             pass
-
-    # Cas fréquent en ligne de commande : '\\xNN' (deux backslashes)
     if len(v) == 5 and v[0] == "\\" and v[1] == "\\" and v[2] == "x":
-        hex_part = v[3:]
         try:
-            value = int(hex_part, 16)
-            return bytes([value]).decode("latin1")
+            return bytes([int(v[3:], 16)]).decode("latin1")
         except ValueError:
             pass
-
-    # Fallback générique : meilleure compat possible, sans casser les autres valeurs.
     try:
         return v.encode("utf-8").decode("unicode_escape")
     except Exception:
         return v
 
 
-def build_pdu_from_args(args: argparse.Namespace) -> GoosePDU:
-    all_data: List[object] = []
+def _parse_values(values: List[str]) -> List[Any]:
+    """Parse --value TYPE:VAL en liste all_data (Python + sérialisable JSON)."""
+    all_data: List[Any] = []
+    for raw in values:
+        if ":" not in raw:
+            raise ValueError(f"Valeur --value invalide : {raw!r}")
+        type_prefix, val = raw.split(":", 1)
+        t = type_prefix.strip().lower()
+        if t in ("b", "bool"):
+            all_data.append(val.lower() in ("1", "true", "t", "yes", "y"))
+        elif t in ("i", "int"):
+            all_data.append(int(val, 0))
+        elif t in ("s", "str"):
+            all_data.append(_unescape_string_literal(val))
+        elif t in ("r", "raw"):
+            if ":" not in val:
+                raise ValueError(f"raw invalide (attendu TAG:HEX) : {val!r}")
+            tag_str, hex_str = val.split(":", 1)
+            all_data.append(["raw", int(tag_str, 0), hex_str.strip()])
+        else:
+            raise ValueError(f"Type inconnu : {t!r}")
+    return all_data
 
-    # Nouveau mode : --value TYPE:VALEUR (préserve strictement l'ordre des FCDA).
-    # TYPE ∈ {b,bool,i,int,s,str,raw}. Exemple :
-    #   --value b:1 --value i:0 --value s:OR1
-    #   --value raw:4:0680  (valeur binaire brute : tag 4, octets 06 80)
-    if getattr(args, "value", None):
-        typed_values: List[Tuple[str, str]] = []
-        for raw in args.value:
-            if ":" not in raw:
-                raise ValueError(f"Valeur --value invalide (attendu TYPE:VALEUR) : {raw!r}")
-            type_prefix, val = raw.split(":", 1)
-            typed_values.append((type_prefix.strip().lower(), val))
 
-        for t, v in typed_values:
-            if t in ("b", "bool"):
-                all_data.append(v.lower() in ("1", "true", "t", "yes", "y"))
-            elif t in ("i", "int"):
-                all_data.append(int(v, 0))
-            elif t in ("s", "str"):
-                # On autorise l'écriture de littéraux échappés, ex: "\\x00"
-                all_data.append(_unescape_string_literal(v))
-            elif t in ("r", "raw"):
-                # Format attendu : TAG:HEX (ex: "4:0680")
-                if ":" not in v:
-                    raise ValueError(
-                        f"Valeur --value raw invalide (attendu TAG:HEX) : {v!r}"
-                    )
-                tag_str, hex_str = v.split(":", 1)
-                tag_num = int(tag_str, 0)
-                hex_clean = hex_str.strip()
-                # On laisse la validation de l'hex côté encodeur (bytes.fromhex),
-                # ici on ne fait qu'enregistrer une structure bijective.
-                all_data.append(("raw", tag_num, hex_clean))
-            else:
-                raise ValueError(
-                    f"Type --value inconnu : {t!r} (attendu b/bool/i/int/s/str/raw)"
-                )
+def _serialize_all_data(all_data: List[Any]) -> List[Any]:
+    """Convertit pour JSON : tuples -> listes."""
+    out: List[Any] = []
+    for x in all_data:
+        if isinstance(x, tuple) and len(x) == 3 and x[0] == "raw":
+            out.append(list(x))
+        else:
+            out.append(x)
+    return out
 
-    # Ancien mode (compatibilité) : --bool / --int / --str, regroupés par type.
-    # Si --value est fourni, ces options supplémentaires sont ignorées.
-    elif args.bool is not None or args.int is not None or args.str is not None:
-        if args.bool is not None:
-            for v in args.bool:
-                all_data.append(v.lower() in ("1", "true", "t", "yes", "y"))
 
-        if args.int is not None:
-            for v in args.int:
-                all_data.append(int(v, 0))
+def build_stream_config(args: argparse.Namespace) -> dict:
+    """Construit le dict de configuration d'un flux pour l'API."""
+    values = getattr(args, "value", None) or []
+    all_data = _parse_values(values) if values else []
+    if getattr(args, "bool", None):
+        for v in args.bool:
+            all_data.append(v.lower() in ("1", "true", "t", "yes", "y"))
+    if getattr(args, "int", None):
+        for v in args.int:
+            all_data.append(int(v, 0))
+    if getattr(args, "str", None):
+        for v in args.str:
+            all_data.append(_unescape_string_literal(v))
 
-        if args.str is not None:
-            for v in args.str:
-                all_data.append(v)
+    return {
+        "iface": args.iface,
+        "src_mac": args.src_mac,
+        "dst_mac": args.dst_mac,
+        "app_id": args.appid,
+        "vlan_id": getattr(args, "vlan_id", None),
+        "vlan_priority": getattr(args, "vlan_priority", None),
+        "gocb_ref": args.gocb_ref,
+        "dat_set": args.dat_set,
+        "go_id": args.go_id,
+        "ttl": getattr(args, "ttl", 5000),
+        "conf_rev": getattr(args, "conf_rev", 1),
+        "simulation": getattr(args, "sim", False),
+        "nds_com": getattr(args, "nds_com", False),
+        "all_data": _serialize_all_data(all_data),
+    }
 
-    now = datetime.now(timezone.utc)
 
-    return GoosePDU(
-        gocb_ref=args.gocb_ref,
-        time_allowed_to_live=args.ttl,
-        dat_set=args.dat_set,
-        go_id=args.go_id,
-        timestamp=now,
-        st_num=args.st_num,
-        sq_num=args.sq_num,
-        simulation=args.sim,
-        conf_rev=args.conf_rev,
-        nds_com=args.nds_com,
-        num_dat_set_entries=args.entries if args.entries is not None else len(all_data),
-        all_data=all_data,
+def _api_request(base_url: str, method: str, path: str, body: dict | None = None) -> dict:
+    url = f"{base_url.rstrip('/')}{path}"
+    data = json.dumps(body).encode("utf-8") if body else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"} if data else {},
     )
+    with urllib.request.urlopen(req) as resp:
+        if resp.status in (200, 201):
+            return json.loads(resp.read().decode("utf-8"))
+        if resp.status == 204:
+            return {}
+        raise RuntimeError(f"API error {resp.status}: {resp.read().decode()}")
+
+
+def cmd_add(args: argparse.Namespace, base_url: str) -> None:
+    config = build_stream_config(args)
+    result = _api_request(base_url, "POST", "/streams", body=config)
+    print(f"Flux créé: {result['id']}")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+def cmd_modify(args: argparse.Namespace, base_url: str) -> None:
+    stream_id = args.stream_id
+    body: dict = {}
+    if getattr(args, "value", None):
+        body["all_data"] = _serialize_all_data(_parse_values(args.value))
+    if getattr(args, "ttl", None) is not None:
+        body["ttl"] = args.ttl
+    if getattr(args, "gocb_ref", None):
+        body["gocb_ref"] = args.gocb_ref
+    if getattr(args, "dat_set", None):
+        body["dat_set"] = args.dat_set
+    if getattr(args, "go_id", None):
+        body["go_id"] = args.go_id
+    if not body:
+        print("Aucune modification spécifiée.", file=sys.stderr)
+        sys.exit(1)
+    result = _api_request(base_url, "PATCH", f"/streams/{stream_id}", body=body)
+    print(f"Flux modifié: {stream_id}")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+def cmd_delete(args: argparse.Namespace, base_url: str) -> None:
+    _api_request(base_url, "DELETE", f"/streams/{args.stream_id}")
+    print(f"Flux supprimé: {args.stream_id}")
+
+
+def cmd_list(args: argparse.Namespace, base_url: str) -> None:
+    result = _api_request(base_url, "GET", "/streams")
+    streams = result.get("streams", [])
+    if not streams:
+        print("Aucun flux configuré.")
+        return
+    for s in streams:
+        print(f"{s['id']}  gocbRef={s['gocb_ref']}  goID={s['go_id']}  stNum={s['st_num']}  sqNum={s['sq_num']}")
+
+
+def _add_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("add", help="Ajouter un flux GOOSE")
+    p.add_argument("iface", help="Interface réseau")
+    p.add_argument("src_mac", help="MAC source")
+    p.add_argument("dst_mac", help="MAC destination")
+    p.add_argument("--appid", type=lambda x: int(x, 0), required=True)
+    p.add_argument("--vlan-id", type=int, default=None)
+    p.add_argument("--vlan-priority", type=int, default=None)
+    p.add_argument("--gocb-ref", required=True)
+    p.add_argument("--dat-set", required=True)
+    p.add_argument("--go-id", required=True)
+    p.add_argument("--ttl", type=int, default=5000)
+    p.add_argument("--conf-rev", type=int, default=1)
+    p.add_argument("--sim", action="store_true")
+    p.add_argument("--nds-com", action="store_true")
+    p.add_argument("--entries", type=int, default=None, help="(ignoré, conservé pour compat)")
+    p.add_argument("--value", action="append", default=[])
+    p.add_argument("--bool", action="append")
+    p.add_argument("--int", action="append")
+    p.add_argument("--str", action="append")
+
+
+def _modify_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("modify", help="Modifier un flux")
+    p.add_argument("stream_id", help="ID du flux (retourné par add)")
+    p.add_argument("--value", action="append", default=[])
+    p.add_argument("--ttl", type=int)
+    p.add_argument("--gocb-ref")
+    p.add_argument("--dat-set")
+    p.add_argument("--go-id")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Envoie une trame GOOSE configurable sur le réseau.",
-    )
-
-    # Interface / MAC / VLAN / APPID
-    parser.add_argument("iface", help="Interface réseau (ex: processbus, en0, eth0, ...)")
-    parser.add_argument("src_mac", help="Adresse MAC source utilisée pour l'émission.")
-    parser.add_argument("dst_mac", help="Adresse MAC destination (souvent multicast GOOSE).")
-
-    parser.add_argument(
-        "--appid",
-        type=lambda x: int(x, 0),
-        required=True,
-        help="APPID GOOSE (ex: 0x0600).",
+        description="Client CLI pour le service GOOSE. Convertit les commandes en requêtes API.",
     )
     parser.add_argument(
-        "--vlan-id",
-        type=int,
-        default=None,
-        help="VLAN ID (802.1Q). Si omis, trame non tagguée.",
+        "--service",
+        default="http://127.0.0.1:9843",
+        help="URL du service GOOSE (défaut: http://127.0.0.1:9843)",
     )
-    parser.add_argument(
-        "--vlan-priority",
-        type=int,
-        default=None,
-        help="Priorité VLAN (0-7). Si omis, priorité 0.",
-    )
-
-    # Champs GOOSE principaux
-    parser.add_argument(
-        "--gocb-ref",
-        required=True,
-        help="gocbRef (ex: VMC7_6LD0/LLN0$GO$CB_LDPHAS1_GME_DEP6).",
-    )
-    parser.add_argument(
-        "--dat-set",
-        required=True,
-        help="datSet (ex: VMC7_6LD0/LLN0$DS_LDPHAS1_GME_DEP6).",
-    )
-    parser.add_argument(
-        "--go-id",
-        required=True,
-        help="goID (ex: LDPHAS1_GME_DEP6_S).",
-    )
-    parser.add_argument(
-        "--ttl",
-        type=int,
-        default=5000,
-        help="timeAllowedToLive en ms (par défaut: 5000).",
-    )
-    parser.add_argument(
-        "--st-num",
-        type=int,
-        default=1,
-        help="stNum (par défaut: 1).",
-    )
-    parser.add_argument(
-        "--sq-num",
-        type=int,
-        default=0,
-        help="sqNum (par défaut: 0).",
-    )
-    parser.add_argument(
-        "--conf-rev",
-        type=int,
-        default=1,
-        help="confRev (par défaut: 1).",
-    )
-    parser.add_argument(
-        "--sim",
-        action="store_true",
-        help="Active le flag simulation/test.",
-    )
-    parser.add_argument(
-        "--nds-com",
-        action="store_true",
-        help="Active le flag ndsCom.",
-    )
-    parser.add_argument(
-        "--entries",
-        type=int,
-        default=None,
-        help="numDatSetEntries. Par défaut = len(allData).",
-    )
-
-    # Contenu de allData
-    parser.add_argument(
-        "--value",
-        action="append",
-        help=(
-            "Ajoute une valeur typée à allData en respectant l'ordre (répétable). "
-            "Format: TYPE:VALEUR avec TYPE ∈ {b,bool,i,int,s,str,raw}, "
-            "ex: --value b:1 --value i:0 --value s:OR1, "
-            "ou --value raw:TAG:HEX pour une valeur binaire brute (ex: raw:4:0680). "
-            "Si --value est utilisé, les options --bool/--int/--str sont ignorées."
-        ),
-    )
-    parser.add_argument(
-        "--bool",
-        action="append",
-        help="Ajoute une valeur booléenne à allData (true/false, utilisable plusieurs fois).",
-    )
-    parser.add_argument(
-        "--int",
-        action="append",
-        help="Ajoute un entier (décimal ou 0x..) à allData (utilisable plusieurs fois).",
-    )
-    parser.add_argument(
-        "--str",
-        action="append",
-        help="Ajoute une chaîne à allData (utilisable plusieurs fois).",
-    )
-
-    parser.add_argument(
-        "--count",
-        type=int,
-        default=1,
-        help="Nombre de trames à envoyer (par défaut: 1).",
-    )
-    parser.add_argument(
-        "--interval",
-        type=float,
-        default=0.0,
-        help="Intervalle entre trames (en secondes).",
-    )
-    parser.add_argument(
-        "--auto-sq",
-        action="store_true",
-        help="Incrémente automatiquement sqNum à chaque trame envoyée.",
-    )
-    parser.add_argument(
-        "--iec-profile",
-        action="store_true",
-        help=(
-            "Applique une loi de temporisation IEC 61850 simple "
-            "(intervalle qui double entre --iec-min-ms et --iec-max-ms). "
-            "Utilisé uniquement avec --auto-sq."
-        ),
-    )
-    parser.add_argument(
-        "--iec-min-ms",
-        type=int,
-        default=10,
-        help="Intervalle minimal IEC en millisecondes (par défaut: 10 ms).",
-    )
-    parser.add_argument(
-        "--iec-max-ms",
-        type=int,
-        default=2000,
-        help="Intervalle maximal IEC en millisecondes (par défaut: 2000 ms).",
-    )
-
+    sub = parser.add_subparsers(dest="command", required=True)
+    _add_parser(sub)
+    _modify_parser(sub)
+    sub.add_parser("list", help="Lister les flux")
+    d = sub.add_parser("delete", help="Supprimer un flux")
+    d.add_argument("stream_id")
     args = parser.parse_args()
+    base_url = args.service.rstrip("/")
 
-    pdu = build_pdu_from_args(args)
-
-    publisher = GoosePublisher(
-        iface=args.iface,
-        src_mac=args.src_mac,
-        app_id=args.appid,
-        vlan_id=args.vlan_id,
-        vlan_priority=args.vlan_priority,
-    )
-
-    print(
-        f"Envoi GOOSE sur {args.iface} "
-        f"src_mac={args.src_mac} dst_mac={args.dst_mac} "
-        f"APPID=0x{args.appid:04X} vlan={args.vlan_id if args.vlan_id is not None else '-'} "
-        f"gocbRef={args.gocb_ref} goID={args.go_id} count={args.count}",
-    )
-    # Mode simple : on laisse scapy gérer le count/inter, sqNum reste fixe.
-    if not args.auto_sq:
-        publisher.send(
-            dst_mac=args.dst_mac,
-            pdu=pdu,
-            count=args.count,
-            inter=args.interval,
-        )
-    else:
-        # Mode GOOSE-like : on incrémente sqNum à chaque trame.
-        base_sq = args.sq_num
-
-        if args.iec_profile:
-            # Profil simple IEC 61850: on part de iec-min, puis on double jusqu'à iec-max.
-            current_interval = max(args.iec_min_ms, 1) / 1000.0
-            max_interval = max(args.iec_max_ms, args.iec_min_ms) / 1000.0
-
-            for i in range(args.count):
-                pdu.sq_num = base_sq + i
-                publisher.send(
-                    dst_mac=args.dst_mac,
-                    pdu=pdu,
-                    count=1,
-                    inter=0.0,
-                )
-                if i < args.count - 1:
-                    time.sleep(current_interval)
-                    current_interval = min(current_interval * 2.0, max_interval)
-        else:
-            for i in range(args.count):
-                pdu.sq_num = base_sq + i
-                publisher.send(
-                    dst_mac=args.dst_mac,
-                    pdu=pdu,
-                    count=1,
-                    inter=0.0,
-                )
-                if args.interval > 0 and i < args.count - 1:
-                    time.sleep(args.interval)
+    try:
+        if args.command == "add":
+            cmd_add(args, base_url)
+        elif args.command == "modify":
+            cmd_modify(args, base_url)
+        elif args.command == "delete":
+            cmd_delete(args, base_url)
+        elif args.command == "list":
+            cmd_list(args, base_url)
+    except urllib.error.URLError as e:
+        print(f"Erreur connexion au service: {e}", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Erreur réponse API: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
-
