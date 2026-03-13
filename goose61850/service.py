@@ -190,12 +190,21 @@ class GooseService:
     # ------------------------------------------------------------------
 
     def _save_state(self) -> None:
-        """Sauvegarde la liste des flux dans un fichier JSON."""
+        """Sauvegarde la liste des flux dans un fichier JSON.
+
+        Attention : cette fonction est appelée depuis des sections déjà
+        protégées par `_streams_lock`. On évite donc toute ré‑entrée sur
+        `list_streams()` et on manipule directement le dict interne.
+        """
         try:
-            streams = [_stream_to_dict(s) for s in self.list_streams()]
+            with self._streams_lock:
+                streams = [_stream_to_dict(s) for s in self._streams.values()]
             payload = {"streams": streams}
             tmp_path = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
-            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
             tmp_path.replace(self._state_path)
         except Exception:
             # On ne fait pas échouer le service si la persistance casse.
