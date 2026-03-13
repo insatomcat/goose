@@ -615,6 +615,19 @@ def make_web_handler(service: GooseService) -> type:
                 else:
                     action_html = "<span style=\"color:#888\">Déjà actif</span>"
 
+                # Détails complets du flux au format JSON pretty-printed.
+                details_json = json.dumps(r, ensure_ascii=False, indent=2)
+                # Échappage minimal pour HTML.
+                details_html = (
+                    details_json.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                )
+                action_html += (
+                    "<br><details><summary>Détails</summary>"
+                    f"<pre>{details_html}</pre></details>"
+                )
+
                 recent_rows.append(
                     f"<tr>"
                     f"<td>{rid}</td>"
@@ -661,6 +674,7 @@ def make_web_handler(service: GooseService) -> type:
   </table>
 
   <h2>Flux récemment arrêtés</h2>
+  <h2>Flux récemment configurés</h2>
   <table>
     <thead>
       <tr>
