@@ -587,8 +587,8 @@ def make_web_handler(service: GooseService) -> type:
                     f"<td>{s.id}</td>"
                     f"<td>{s.gocb_ref}</td>"
                     f"<td>{s.go_id}</td>"
-                    f"<td>{s.st_num}</td>"
-                    f"<td>{s.sq_num}</td>"
+                    f"<td>{s.src_mac}</td>"
+                    f"<td>{s.dst_mac}</td>"
                     f"<td>"
                     f"<a href=\"/streams/{s.id}/edit\">Modifier</a>"
                     f" | "
@@ -633,8 +633,8 @@ def make_web_handler(service: GooseService) -> type:
                     f"<td>{rid}</td>"
                     f"<td>{gref}</td>"
                     f"<td>{r.get('go_id', '')}</td>"
-                    f"<td>{r.get('st_num', '')}</td>"
-                    f"<td>{r.get('sq_num', '')}</td>"
+                    f"<td>{r.get('src_mac', '')}</td>"
+                    f"<td>{r.get('dst_mac', '')}</td>"
                     f"<td>{action_html}</td>"
                     f"</tr>"
                 )
@@ -663,8 +663,8 @@ def make_web_handler(service: GooseService) -> type:
         <th>ID</th>
         <th>gocbRef</th>
         <th>goID</th>
-        <th>stNum</th>
-        <th>sqNum</th>
+        <th>src_mac</th>
+        <th>dst_mac</th>
         <th>Actions</th>
       </tr>
     </thead>
@@ -673,7 +673,6 @@ def make_web_handler(service: GooseService) -> type:
     </tbody>
   </table>
 
-  <h2>Flux récemment arrêtés</h2>
   <h2>Flux récemment configurés</h2>
   <table>
     <thead>
@@ -681,8 +680,8 @@ def make_web_handler(service: GooseService) -> type:
         <th>ID</th>
         <th>gocbRef</th>
         <th>goID</th>
-        <th>stNum</th>
-        <th>sqNum</th>
+        <th>src_mac</th>
+        <th>dst_mac</th>
         <th>Actions</th>
       </tr>
     </thead>
