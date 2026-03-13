@@ -162,6 +162,59 @@ def cmd_list(args: argparse.Namespace, base_url: str) -> None:
         print(f"{s['id']}  gocbRef={s['gocb_ref']}  goID={s['go_id']}  stNum={s['st_num']}  sqNum={s['sq_num']}")
 
 
+def _value_to_spec(v: Any) -> str:
+    """Convertit un élément all_data en spécification --value TYPE:VALEUR."""
+    # Forme brute: ["raw", tag, hex]
+    if isinstance(v, list) and len(v) == 3 and v[0] == "raw":
+        tag = int(v[1])
+        hex_str = str(v[2])
+        return f"raw:{tag}:{hex_str}"
+    # bool
+    if isinstance(v, bool):
+        return f"b:{'1' if v else '0'}"
+    # int
+    if isinstance(v, int):
+        return f"i:{v}"
+    # str
+    if isinstance(v, str):
+        if v == "\x00":
+            # Cas fréquent: octet nul
+            return "s:'\\\\x00'"
+        # On laisse la responsabilité du quoting à l'utilisateur pour les cas exotiques.
+        return f"s:{v}"
+    # fallback: repr
+    return f"s:{repr(v)}"
+
+
+def cmd_update_cmd(args: argparse.Namespace, base_url: str) -> None:
+    """Affiche une commande 'modify' pré-remplie pour un flux donné."""
+    stream_id = args.stream_id
+    s = _api_request(base_url, "GET", f"/streams/{stream_id}")
+    all_data = s.get("all_data", [])
+
+    cmd_lines: list[str] = []
+    cmd_lines.append(f"python3 goose_cli.py modify {stream_id} \\")
+
+    # On propose les valeurs actuelles de all_data sous forme de --value ...
+    for v in all_data:
+        spec = _value_to_spec(v)
+        cmd_lines.append(f"  --value {spec} \\")
+
+    # On ajoute en commentaire les autres champs modifiables éventuels.
+    cmd_lines.append("  # --ttl {ttl} --gocb-ref '{gocb_ref}' --dat-set '{dat_set}' --go-id '{go_id}'".format(
+        ttl=s.get("ttl", 5000),
+        gocb_ref=s.get("gocb_ref", ""),
+        dat_set=s.get("dat_set", ""),
+        go_id=s.get("go_id", ""),
+    ))
+
+    # On retire le dernier antislash si besoin.
+    if cmd_lines[-2].endswith(" \\"):
+        cmd_lines[-2] = cmd_lines[-2].rstrip(" \\")
+
+    print("\n".join(cmd_lines))
+
+
 def _add_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("add", help="Ajouter un flux GOOSE")
     p.add_argument("iface", help="Interface réseau")
@@ -194,6 +247,14 @@ def _modify_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--go-id")
 
 
+def _update_cmd_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "update-cmd",
+        help="Affiche une commande 'modify' pré-remplie pour un flux",
+    )
+    p.add_argument("stream_id", help="ID du flux (retourné par add ou list)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Client CLI pour le service GOOSE. Convertit les commandes en requêtes API.",
@@ -206,6 +267,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     _add_parser(sub)
     _modify_parser(sub)
+    _update_cmd_parser(sub)
     sub.add_parser("list", help="Lister les flux")
     d = sub.add_parser("delete", help="Supprimer un flux")
     d.add_argument("stream_id")
@@ -217,6 +279,8 @@ def main() -> None:
             cmd_add(args, base_url)
         elif args.command == "modify":
             cmd_modify(args, base_url)
+        elif args.command == "update-cmd":
+            cmd_update_cmd(args, base_url)
         elif args.command == "delete":
             cmd_delete(args, base_url)
         elif args.command == "list":
