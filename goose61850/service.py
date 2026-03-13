@@ -102,22 +102,17 @@ class GooseService:
         host: str = "localhost",
         port: int = 7053,
         state_file: str | Path = "goose_streams.json",
-        web_port: int = 7054,
     ) -> None:
         self.host = host
         self.port = port
         self._state_path = Path(state_file)
-        # Port de l'interface web (HTML) simple
-        self.web_port = web_port
         self._streams: Dict[str, GooseStream] = {}
-        # Historique des derniers flux arrêtés (max 10 éléments),
-        # stockés sous forme de dicts (_stream_to_dict).
+        # Historique des flux récemment configurés (max 10 éléments).
         self._recent: List[Dict[str, Any]] = []
         self._streams_lock = threading.Lock()
         self._stop = threading.Event()
         self._sender_thread: Optional[threading.Thread] = None
         self._http_server: Optional[HTTPServer] = None
-        self._web_server: Optional[HTTPServer] = None
         # Charge l'état éventuel des flux depuis le disque.
         self._load_state()
 
@@ -414,8 +409,7 @@ class GooseService:
         self._sender_thread = threading.Thread(target=self._sender_loop, daemon=True)
         self._sender_thread.start()
 
-        # API JSON
-        handler = make_handler(self)
+        handler = make_unified_handler(self)
         self._http_server = HTTPServer((self.host, self.port), handler)
 
         def run_server() -> None:
@@ -425,25 +419,11 @@ class GooseService:
         t = threading.Thread(target=run_server, daemon=True)
         t.start()
 
-        # Interface web (HTML) légère pour visualiser / modifier / supprimer
-        web_handler = make_web_handler(self)
-        self._web_server = HTTPServer((self.host, self.web_port), web_handler)
-
-        def run_web() -> None:
-            assert self._web_server is not None
-            self._web_server.serve_forever()
-
-        tw = threading.Thread(target=run_web, daemon=True)
-        tw.start()
-
     def stop(self) -> None:
         self._stop.set()
         if self._http_server:
             self._http_server.shutdown()
             self._http_server = None
-        if self._web_server:
-            self._web_server.shutdown()
-            self._web_server = None
 
 
 def _handle_api(service: GooseService, path: str, method: str, body: Optional[bytes]) -> tuple[int, Dict[str, Any]]:
@@ -485,50 +465,17 @@ def _handle_api(service: GooseService, path: str, method: str, body: Optional[by
     return 404, {"error": "Not found"}
 
 
-def make_handler(service: GooseService) -> type:
-    """Crée une classe BaseHTTPRequestHandler liée au service."""
+def make_unified_handler(service: GooseService) -> type:
+    """Crée un handler unique : API sous /api/*, Web UI à la racine."""
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            self._dispatch()
-
-        def do_POST(self) -> None:
-            self._dispatch()
-
-        def do_PATCH(self) -> None:
-            self._dispatch()
-
-        def do_DELETE(self) -> None:
-            self._dispatch()
-
-        def _dispatch(self) -> None:
-            parsed = urlparse(self.path)
-            path = parsed.path or "/"
-            body = None
-            if self.command in ("POST", "PATCH"):
-                length = int(self.headers.get("Content-Length", 0))
-                if length:
-                    body = self.rfile.read(length)
-            status, result = _handle_api(service, path, self.command, body)
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            if status != 204:
-                self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
-
-        def log_message(self, format: str, *args: Any) -> None:
-            pass
-
-    return Handler
-
-
-def make_web_handler(service: GooseService) -> type:
-    """Crée un handler HTTP servant une petite interface HTML."""
-
-    class WebHandler(BaseHTTPRequestHandler):
+    class UnifiedHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # type: ignore[override]
             parsed = urlparse(self.path)
             path = parsed.path or "/"
+
+            if path.startswith("/api"):
+                self._dispatch_api(path)
+                return
 
             if path == "/" or path == "/streams":
                 self._render_streams_list()
@@ -546,6 +493,10 @@ def make_web_handler(service: GooseService) -> type:
         def do_POST(self) -> None:  # type: ignore[override]
             parsed = urlparse(self.path)
             path = parsed.path or "/"
+
+            if path.startswith("/api"):
+                self._dispatch_api(path)
+                return
 
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b""
@@ -573,6 +524,36 @@ def make_web_handler(service: GooseService) -> type:
                     return
 
             self._send_not_found()
+
+        def do_PATCH(self) -> None:  # type: ignore[override]
+            parsed = urlparse(self.path)
+            path = parsed.path or "/"
+            if path.startswith("/api"):
+                self._dispatch_api(path)
+            else:
+                self._send_not_found()
+
+        def do_DELETE(self) -> None:  # type: ignore[override]
+            parsed = urlparse(self.path)
+            path = parsed.path or "/"
+            if path.startswith("/api"):
+                self._dispatch_api(path)
+            else:
+                self._send_not_found()
+
+        def _dispatch_api(self, path: str) -> None:
+            api_path = path[4:] or "/"
+            body = None
+            if self.command in ("POST", "PATCH"):
+                length = int(self.headers.get("Content-Length", 0))
+                if length:
+                    body = self.rfile.read(length)
+            status, result = _handle_api(service, api_path, self.command, body)
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            if status != 204:
+                self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
 
         # --- Helpers HTML ---
 
@@ -787,4 +768,4 @@ def make_web_handler(service: GooseService) -> type:
         def log_message(self, format: str, *args: Any) -> None:  # type: ignore[override]
             pass
 
-    return WebHandler
+    return UnifiedHandler

@@ -121,7 +121,7 @@ def _api_request(base_url: str, method: str, path: str, body: dict | None = None
 
 def cmd_add(args: argparse.Namespace, base_url: str) -> None:
     config = build_stream_config(args)
-    result = _api_request(base_url, "POST", "/streams", body=config)
+    result = _api_request(base_url, "POST", "/api/streams", body=config)
     print(f"Flux créé: {result['id']}")
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
@@ -142,18 +142,18 @@ def cmd_modify(args: argparse.Namespace, base_url: str) -> None:
     if not body:
         print("Aucune modification spécifiée.", file=sys.stderr)
         sys.exit(1)
-    result = _api_request(base_url, "PATCH", f"/streams/{stream_id}", body=body)
+    result = _api_request(base_url, "PATCH", f"/api/streams/{stream_id}", body=body)
     print(f"Flux modifié: {stream_id}")
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 def cmd_delete(args: argparse.Namespace, base_url: str) -> None:
-    _api_request(base_url, "DELETE", f"/streams/{args.stream_id}")
+    _api_request(base_url, "DELETE", f"/api/streams/{args.stream_id}")
     print(f"Flux supprimé: {args.stream_id}")
 
 
 def cmd_list(args: argparse.Namespace, base_url: str) -> None:
-    result = _api_request(base_url, "GET", "/streams")
+    result = _api_request(base_url, "GET", "/api/streams")
     streams = result.get("streams", [])
     if not streams:
         print("Aucun flux configuré.")
@@ -189,7 +189,7 @@ def _value_to_spec(v: Any) -> str:
 def cmd_update_cmd(args: argparse.Namespace, base_url: str) -> None:
     """Affiche une commande 'modify' pré-remplie pour un flux donné."""
     stream_id = args.stream_id
-    s = _api_request(base_url, "GET", f"/streams/{stream_id}")
+    s = _api_request(base_url, "GET", f"/api/streams/{stream_id}")
     all_data = s.get("all_data", [])
 
     cmd_lines: list[str] = []

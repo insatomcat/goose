@@ -44,12 +44,9 @@ def main() -> None:
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    print(f"Service GOOSE démarré. API HTTP sur http://{args.host}:{args.port}")
-    print("  POST   /streams     - Ajouter un flux")
-    print("  GET    /streams     - Lister les flux")
-    print("  GET    /streams/id  - Détail d'un flux")
-    print("  PATCH  /streams/id  - Modifier un flux")
-    print("  DELETE /streams/id  - Supprimer un flux")
+    print(f"Service GOOSE démarré sur http://{args.host}:{args.port}")
+    print("  API:     /api/streams (GET, POST, GET/PATCH/DELETE /api/streams/<id>)")
+    print("  Web UI:  / (interface graphique)")
     print("Interrompre avec Ctrl+C.")
 
     stop_event.wait()
