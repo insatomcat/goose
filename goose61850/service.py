@@ -148,6 +148,8 @@ class GooseService:
             )
             self._streams[stream_id] = s
 
+        # Ajoute ce flux à l'historique des flux récemment utilisés, si config nouvelle.
+        self._remember_recent(_stream_to_dict(s))
         # Sauvegarde hors zone critique pour éviter les blocages.
         self._save_state()
         return s
@@ -183,11 +185,16 @@ class GooseService:
 
     def delete_stream(self, stream_id: str) -> bool:
         with self._streams_lock:
-            removed = self._streams.pop(stream_id, None) is not None
+            s = self._streams.pop(stream_id, None)
 
-        if removed:
-            self._save_state()
-        return removed
+        if s is None:
+            return False
+
+        # On ajoute ce flux supprimé à l'historique récent.
+        entry = _stream_to_dict(s)
+        self._remember_recent(entry)
+        self._save_state()
+        return True
 
     def get_stream(self, stream_id: str) -> Optional[GooseStream]:
         with self._streams_lock:
@@ -203,19 +210,45 @@ class GooseService:
             # On renvoie une copie superficielle pour éviter les modifications in-place.
             return list(self._recent)
 
-    def stop_stream(self, stream_id: str) -> bool:
-        """Arrête un flux (ne plus l'envoyer) mais le garde dans l'historique récent."""
+    def _remember_recent(self, entry: Dict[str, Any]) -> None:
+        """Ajoute une entrée à l'historique récent si elle est vraiment nouvelle.
+
+        "Nouvelle" signifie qu'aucun élément existant de _recent n'a exactement les
+        mêmes paramètres (y compris all_data), à l'exception des champs d'id et de
+        compteurs stNum/sqNum.
+        """
         with self._streams_lock:
-            s = self._streams.pop(stream_id, None)
-            if s is None:
-                return False
-            entry = _stream_to_dict(s)
+            # Filtre de dé-duplication : on compare la config hors id/st_num/sq_num.
+            def _config_key(e: Dict[str, Any]) -> Dict[str, Any]:
+                return {
+                    k: e.get(k)
+                    for k in (
+                        "iface",
+                        "src_mac",
+                        "dst_mac",
+                        "app_id",
+                        "vlan_id",
+                        "vlan_priority",
+                        "gocb_ref",
+                        "dat_set",
+                        "go_id",
+                        "ttl",
+                        "conf_rev",
+                        "simulation",
+                        "nds_com",
+                        "all_data",
+                    )
+                }
+
+            new_key = _config_key(entry)
+            for e in self._recent:
+                if _config_key(e) == new_key:
+                    # Déjà présent avec la même config, on ne duplique pas.
+                    return
+
             # On ajoute en tête de liste et on tronque à 10 éléments.
             self._recent.insert(0, entry)
             self._recent = self._recent[:10]
-
-        self._save_state()
-        return True
 
     def restart_from_recent(self, hist_id: str) -> bool:
         """Relance un flux à partir de l'historique récent."""
@@ -228,10 +261,17 @@ class GooseService:
             if entry is None:
                 return False
 
+            # Si un flux avec le même gocbRef est déjà en cours, on ne relance pas.
+            gref = str(entry.get("gocb_ref", ""))
+            for s_active in self._streams.values():
+                if s_active.gocb_ref == gref:
+                    return False
+
             now = time.monotonic()
             all_data = _parse_all_data(entry.get("all_data", []))
             s = GooseStream(
-                id=str(entry.get("id", str(uuid.uuid4()))),
+                # Nouveau flux => nouvel identifiant interne.
+                id=str(uuid.uuid4()),
                 iface=str(entry["iface"]),
                 src_mac=str(entry["src_mac"]),
                 dst_mac=str(entry["dst_mac"]),
@@ -524,13 +564,6 @@ def make_web_handler(service: GooseService) -> type:
                     service.delete_stream(stream_id)
                     self._redirect("/streams")
                     return
-            elif path.startswith("/streams/") and path.endswith("/stop"):
-                parts = path.split("/")
-                if len(parts) >= 3 and parts[2]:
-                    stream_id = parts[2]
-                    service.stop_stream(stream_id)
-                    self._redirect("/streams")
-                    return
             elif path.startswith("/recent/") and path.endswith("/restart"):
                 parts = path.split("/")
                 if len(parts) >= 3 and parts[2]:
@@ -559,10 +592,6 @@ def make_web_handler(service: GooseService) -> type:
                     f"<td>"
                     f"<a href=\"/streams/{s.id}/edit\">Modifier</a>"
                     f" | "
-                    f"<form method=\"POST\" action=\"/streams/{s.id}/stop\" style=\"display:inline\" onsubmit=\"return confirm('Arrêter ce flux ?');\">"
-                    f"<button type=\"submit\">Arrêter</button>"
-                    f"</form>"
-                    f" | "
                     f"<form method=\"POST\" action=\"/streams/{s.id}/delete\" style=\"display:inline\" onsubmit=\"return confirm('Supprimer ce flux ?');\">"
                     f"<button type=\"submit\">Supprimer</button>"
                     f"</form>"
@@ -572,20 +601,28 @@ def make_web_handler(service: GooseService) -> type:
             rows_html = "\n".join(rows) if rows else "<tr><td colspan=\"6\">Aucun flux</td></tr>"
 
             recent_rows: List[str] = []
+            active_grefs = {s.gocb_ref for s in streams}
             for r in recent:
                 rid = r.get("id", "")
+                gref = r.get("gocb_ref", "")
+                can_restart = gref not in active_grefs and bool(gref)
+                if can_restart:
+                    action_html = (
+                        f"<form method=\"POST\" action=\"/recent/{rid}/restart\" style=\"display:inline\">"
+                        f"<button type=\"submit\">Relancer</button>"
+                        f"</form>"
+                    )
+                else:
+                    action_html = "<span style=\"color:#888\">Déjà actif</span>"
+
                 recent_rows.append(
                     f"<tr>"
                     f"<td>{rid}</td>"
-                    f"<td>{r.get('gocb_ref', '')}</td>"
+                    f"<td>{gref}</td>"
                     f"<td>{r.get('go_id', '')}</td>"
                     f"<td>{r.get('st_num', '')}</td>"
                     f"<td>{r.get('sq_num', '')}</td>"
-                    f"<td>"
-                    f"<form method=\"POST\" action=\"/recent/{rid}/restart\" style=\"display:inline\">"
-                    f"<button type=\"submit\">Relancer</button>"
-                    f"</form>"
-                    f"</td>"
+                    f"<td>{action_html}</td>"
                     f"</tr>"
                 )
             recent_rows_html = (
