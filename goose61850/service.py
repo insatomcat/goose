@@ -96,7 +96,7 @@ class GooseService:
     IEC_MIN_MS = 10
     IEC_MAX_MS = 2000
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 9843) -> None:
+    def __init__(self, host: str = "localhost", port: int = 7053) -> None:
         self.host = host
         self.port = port
         self._streams: Dict[str, GooseStream] = {}

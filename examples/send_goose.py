@@ -200,8 +200,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--service",
-        default="http://127.0.0.1:9843",
-        help="URL du service GOOSE (défaut: http://127.0.0.1:9843)",
+        default="http://localhost:7053",
+        help="URL du service GOOSE (défaut: http://localhost:7053)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     _add_parser(sub)

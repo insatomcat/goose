@@ -21,14 +21,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--host",
-        default="127.0.0.1",
-        help="Adresse d'écoute de l'API HTTP (défaut: 127.0.0.1).",
+        default="localhost",
+        help="Adresse d'écoute de l'API HTTP (défaut: localhost).",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=9843,
-        help="Port d'écoute de l'API HTTP (défaut: 9843).",
+        default=7053,
+        help="Port d'écoute de l'API HTTP (défaut: 7053).",
     )
     args = parser.parse_args()
 
