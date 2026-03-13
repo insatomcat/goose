@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/root/goose
-ExecStart=/usr/bin/python3 /root/goose/goose_service.py --host 0.0.0.0 --port 9843
+ExecStart=/usr/bin/python3 /root/goose/goose_service.py
 Restart=on-failure
 RestartSec=5
 
