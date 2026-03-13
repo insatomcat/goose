@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -96,14 +97,22 @@ class GooseService:
     IEC_MIN_MS = 10
     IEC_MAX_MS = 2000
 
-    def __init__(self, host: str = "localhost", port: int = 7053) -> None:
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 7053,
+        state_file: str | Path = "goose_streams.json",
+    ) -> None:
         self.host = host
         self.port = port
+        self._state_path = Path(state_file)
         self._streams: Dict[str, GooseStream] = {}
         self._streams_lock = threading.Lock()
         self._stop = threading.Event()
         self._sender_thread: Optional[threading.Thread] = None
         self._http_server: Optional[HTTPServer] = None
+        # Charge l'état éventuel des flux depuis le disque.
+        self._load_state()
 
     def add_stream(self, config: Dict[str, Any]) -> GooseStream:
         with self._streams_lock:
@@ -131,6 +140,7 @@ class GooseService:
                 current_interval_ms=float(max(self.IEC_MIN_MS, 1)),
             )
             self._streams[stream_id] = s
+            self._save_state()
             return s
 
     def modify_stream(self, stream_id: str, updates: Dict[str, Any]) -> Optional[GooseStream]:
@@ -157,11 +167,15 @@ class GooseService:
             s.st_num += 1
             s.next_send_time = time.monotonic()
             s.current_interval_ms = float(max(self.IEC_MIN_MS, 1))
+            self._save_state()
             return s
 
     def delete_stream(self, stream_id: str) -> bool:
         with self._streams_lock:
-            return self._streams.pop(stream_id, None) is not None
+            removed = self._streams.pop(stream_id, None) is not None
+            if removed:
+                self._save_state()
+            return removed
 
     def get_stream(self, stream_id: str) -> Optional[GooseStream]:
         with self._streams_lock:
@@ -170,6 +184,64 @@ class GooseService:
     def list_streams(self) -> List[GooseStream]:
         with self._streams_lock:
             return list(self._streams.values())
+
+    # ------------------------------------------------------------------
+    # Persistance simple sur disque
+    # ------------------------------------------------------------------
+
+    def _save_state(self) -> None:
+        """Sauvegarde la liste des flux dans un fichier JSON."""
+        try:
+            streams = [_stream_to_dict(s) for s in self.list_streams()]
+            payload = {"streams": streams}
+            tmp_path = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(self._state_path)
+        except Exception:
+            # On ne fait pas échouer le service si la persistance casse.
+            pass
+
+    def _load_state(self) -> None:
+        """Recharge les flux depuis le fichier JSON, si présent."""
+        if not self._state_path.exists():
+            return
+        try:
+            raw = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        streams_data = raw.get("streams") or []
+        now = time.monotonic()
+
+        with self._streams_lock:
+            self._streams.clear()
+            for item in streams_data:
+                try:
+                    all_data = _parse_all_data(item.get("all_data", []))
+                    s = GooseStream(
+                        id=str(item["id"]),
+                        iface=str(item["iface"]),
+                        src_mac=str(item["src_mac"]),
+                        dst_mac=str(item["dst_mac"]),
+                        app_id=int(item["app_id"]),
+                        vlan_id=item.get("vlan_id"),
+                        vlan_priority=item.get("vlan_priority"),
+                        gocb_ref=str(item["gocb_ref"]),
+                        dat_set=str(item["dat_set"]),
+                        go_id=str(item["go_id"]),
+                        ttl=int(item.get("ttl", 5000)),
+                        conf_rev=int(item.get("conf_rev", 1)),
+                        simulation=bool(item.get("simulation", False)),
+                        nds_com=bool(item.get("nds_com", False)),
+                        all_data=all_data,
+                        st_num=int(item.get("st_num", 1)),
+                        sq_num=int(item.get("sq_num", 0)),
+                        next_send_time=now,
+                        current_interval_ms=float(max(self.IEC_MIN_MS, 1)),
+                    )
+                    self._streams[s.id] = s
+                except Exception:
+                    continue
 
     def _sender_loop(self) -> None:
         while not self._stop.wait(0.01):
