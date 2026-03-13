@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .transport import _build_frame
 from .types import GoosePDU
@@ -102,15 +102,19 @@ class GooseService:
         host: str = "localhost",
         port: int = 7053,
         state_file: str | Path = "goose_streams.json",
+        web_port: int = 7054,
     ) -> None:
         self.host = host
         self.port = port
         self._state_path = Path(state_file)
+         # Port de l'interface web (HTML) simple
+        self.web_port = web_port
         self._streams: Dict[str, GooseStream] = {}
         self._streams_lock = threading.Lock()
         self._stop = threading.Event()
         self._sender_thread: Optional[threading.Thread] = None
         self._http_server: Optional[HTTPServer] = None
+        self._web_server: Optional[HTTPServer] = None
         # Charge l'état éventuel des flux depuis le disque.
         self._load_state()
 
@@ -300,6 +304,7 @@ class GooseService:
         self._sender_thread = threading.Thread(target=self._sender_loop, daemon=True)
         self._sender_thread.start()
 
+        # API JSON
         handler = make_handler(self)
         self._http_server = HTTPServer((self.host, self.port), handler)
 
@@ -310,11 +315,25 @@ class GooseService:
         t = threading.Thread(target=run_server, daemon=True)
         t.start()
 
+        # Interface web (HTML) légère pour visualiser / modifier / supprimer
+        web_handler = make_web_handler(self)
+        self._web_server = HTTPServer((self.host, self.web_port), web_handler)
+
+        def run_web() -> None:
+            assert self._web_server is not None
+            self._web_server.serve_forever()
+
+        tw = threading.Thread(target=run_web, daemon=True)
+        tw.start()
+
     def stop(self) -> None:
         self._stop.set()
         if self._http_server:
             self._http_server.shutdown()
             self._http_server = None
+        if self._web_server:
+            self._web_server.shutdown()
+            self._web_server = None
 
 
 def _handle_api(service: GooseService, path: str, method: str, body: Optional[bytes]) -> tuple[int, Dict[str, Any]]:
@@ -391,3 +410,203 @@ def make_handler(service: GooseService) -> type:
             pass
 
     return Handler
+
+
+def make_web_handler(service: GooseService) -> type:
+    """Crée un handler HTTP servant une petite interface HTML."""
+
+    class WebHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # type: ignore[override]
+            parsed = urlparse(self.path)
+            path = parsed.path or "/"
+
+            if path == "/" or path == "/streams":
+                self._render_streams_list()
+            elif path.startswith("/streams/") and path.endswith("/edit"):
+                # /streams/<id>/edit
+                parts = path.split("/")
+                if len(parts) >= 3 and parts[2]:
+                    stream_id = parts[2]
+                    self._render_edit(stream_id)
+                else:
+                    self._send_not_found()
+            else:
+                self._send_not_found()
+
+        def do_POST(self) -> None:  # type: ignore[override]
+            parsed = urlparse(self.path)
+            path = parsed.path or "/"
+
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b""
+            data = parse_qs(body.decode("utf-8")) if body else {}
+
+            if path.startswith("/streams/") and path.endswith("/edit"):
+                parts = path.split("/")
+                if len(parts) >= 3 and parts[2]:
+                    stream_id = parts[2]
+                    self._handle_edit_post(stream_id, data)
+                    return
+            elif path.startswith("/streams/") and path.endswith("/delete"):
+                parts = path.split("/")
+                if len(parts) >= 3 and parts[2]:
+                    stream_id = parts[2]
+                    service.delete_stream(stream_id)
+                    self._redirect("/streams")
+                    return
+
+            self._send_not_found()
+
+        # --- Helpers HTML ---
+
+        def _render_streams_list(self) -> None:
+            streams = service.list_streams()
+            rows = []
+            for s in streams:
+                rows.append(
+                    f"<tr>"
+                    f"<td>{s.id}</td>"
+                    f"<td>{s.gocb_ref}</td>"
+                    f"<td>{s.go_id}</td>"
+                    f"<td>{s.st_num}</td>"
+                    f"<td>{s.sq_num}</td>"
+                    f"<td>"
+                    f"<a href=\"/streams/{s.id}/edit\">Modifier</a>"
+                    f" | "
+                    f"<form method=\"POST\" action=\"/streams/{s.id}/delete\" style=\"display:inline\" onsubmit=\"return confirm('Supprimer ce flux ?');\">"
+                    f"<button type=\"submit\">Supprimer</button>"
+                    f"</form>"
+                    f"</td>"
+                    f"</tr>"
+                )
+            rows_html = "\n".join(rows) if rows else "<tr><td colspan=\"6\">Aucun flux</td></tr>"
+
+            html = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>GOOSE - Flux configurés</title>
+  <style>
+    body {{ font-family: sans-serif; margin: 1rem 2rem; }}
+    table {{ border-collapse: collapse; width: 100%; max-width: 1200px; }}
+    th, td {{ border: 1px solid #ccc; padding: 0.3rem 0.5rem; text-align: left; }}
+    th {{ background: #f0f0f0; }}
+    a, button {{ font-size: 0.9rem; }}
+  </style>
+</head>
+<body>
+  <h1>Flux GOOSE configurés</h1>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>gocbRef</th>
+        <th>goID</th>
+        <th>stNum</th>
+        <th>sqNum</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {rows_html}
+    </tbody>
+  </table>
+</body>
+</html>
+"""
+            self._send_html(html)
+
+        def _render_edit(self, stream_id: str) -> None:
+            s = service.get_stream(stream_id)
+            if s is None:
+                self._send_not_found()
+                return
+
+            all_data_json = json.dumps(_stream_to_dict(s)["all_data"], ensure_ascii=False, indent=2)
+
+            html = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Modifier le flux {stream_id}</title>
+  <style>
+    body {{ font-family: sans-serif; margin: 1rem 2rem; max-width: 1000px; }}
+    label {{ display: block; margin-top: 0.5rem; font-weight: bold; }}
+    input[type=text], textarea {{ width: 100%; box-sizing: border-box; }}
+    textarea {{ height: 10rem; font-family: monospace; font-size: 0.85rem; }}
+    .readonly {{ background: #f5f5f5; }}
+  </style>
+</head>
+<body>
+  <h1>Modifier le flux</h1>
+  <p><strong>ID:</strong> {s.id}</p>
+  <p><strong>Interface:</strong> {s.iface} &nbsp; <strong>src_mac:</strong> {s.src_mac} &nbsp; <strong>dst_mac:</strong> {s.dst_mac}</p>
+  <p><strong>APPID:</strong> 0x{s.app_id:04X}</p>
+
+  <form method="POST" action="/streams/{s.id}/edit">
+    <label>gocbRef</label>
+    <input type="text" name="gocb_ref" value="{s.gocb_ref}" class="readonly" readonly>
+
+    <label>datSet</label>
+    <input type="text" name="dat_set" value="{s.dat_set}" class="readonly" readonly>
+
+    <label>goID</label>
+    <input type="text" name="go_id" value="{s.go_id}" class="readonly" readonly>
+
+    <label>TTL (ms)</label>
+    <input type="text" name="ttl" value="{s.ttl}">
+
+    <label>allData (JSON, liste de valeurs et de ['raw', tag, hex])</label>
+    <textarea name="all_data_json">{all_data_json}</textarea>
+
+    <p>
+      <button type="submit">Enregistrer</button>
+      <a href="/streams">Annuler</a>
+    </p>
+  </form>
+</body>
+</html>
+"""
+            self._send_html(html)
+
+        def _handle_edit_post(self, stream_id: str, data: Dict[str, List[str]]) -> None:
+            updates: Dict[str, Any] = {}
+            ttl_vals = data.get("ttl")
+            if ttl_vals and ttl_vals[0].strip():
+                try:
+                    updates["ttl"] = int(ttl_vals[0].strip())
+                except ValueError:
+                    pass
+
+            all_data_vals = data.get("all_data_json")
+            if all_data_vals and all_data_vals[0].strip():
+                try:
+                    updates["all_data"] = json.loads(all_data_vals[0])
+                except json.JSONDecodeError:
+                    # Ne pas casser la requête pour un JSON incorrect, on ignore.
+                    pass
+
+            if updates:
+                service.modify_stream(stream_id, updates)
+            self._redirect("/streams")
+
+        def _send_html(self, html: str, status: int = 200) -> None:
+            data = html.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _redirect(self, location: str) -> None:
+            self.send_response(303)
+            self.send_header("Location", location)
+            self.end_headers()
+
+        def _send_not_found(self) -> None:
+            self._send_html("<h1>404 Not Found</h1>", status=404)
+
+        def log_message(self, format: str, *args: Any) -> None:  # type: ignore[override]
+            pass
+
+    return WebHandler
