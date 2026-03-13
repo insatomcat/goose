@@ -140,8 +140,10 @@ class GooseService:
                 current_interval_ms=float(max(self.IEC_MIN_MS, 1)),
             )
             self._streams[stream_id] = s
-            self._save_state()
-            return s
+
+        # Sauvegarde hors zone critique pour éviter les blocages.
+        self._save_state()
+        return s
 
     def modify_stream(self, stream_id: str, updates: Dict[str, Any]) -> Optional[GooseStream]:
         with self._streams_lock:
@@ -167,15 +169,18 @@ class GooseService:
             s.st_num += 1
             s.next_send_time = time.monotonic()
             s.current_interval_ms = float(max(self.IEC_MIN_MS, 1))
-            self._save_state()
-            return s
+
+        # Sauvegarde hors section critique.
+        self._save_state()
+        return s
 
     def delete_stream(self, stream_id: str) -> bool:
         with self._streams_lock:
             removed = self._streams.pop(stream_id, None) is not None
-            if removed:
-                self._save_state()
-            return removed
+
+        if removed:
+            self._save_state()
+        return removed
 
     def get_stream(self, stream_id: str) -> Optional[GooseStream]:
         with self._streams_lock:
