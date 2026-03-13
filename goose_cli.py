@@ -193,7 +193,8 @@ def cmd_update_cmd(args: argparse.Namespace, base_url: str) -> None:
     all_data = s.get("all_data", [])
 
     cmd_lines: list[str] = []
-    cmd_lines.append(f"python3 goose_cli.py modify {stream_id} \\")
+    prog = sys.argv[0] if sys.argv and sys.argv[0] else "goose_cli.py"
+    cmd_lines.append(f"python3 {prog} modify {stream_id} \\")
 
     # On propose les valeurs actuelles de all_data sous forme de --value ...
     for v in all_data:
