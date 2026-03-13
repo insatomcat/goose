@@ -107,9 +107,12 @@ class GooseService:
         self.host = host
         self.port = port
         self._state_path = Path(state_file)
-         # Port de l'interface web (HTML) simple
+        # Port de l'interface web (HTML) simple
         self.web_port = web_port
         self._streams: Dict[str, GooseStream] = {}
+        # Historique des derniers flux arrêtés (max 10 éléments),
+        # stockés sous forme de dicts (_stream_to_dict).
+        self._recent: List[Dict[str, Any]] = []
         self._streams_lock = threading.Lock()
         self._stop = threading.Event()
         self._sender_thread: Optional[threading.Thread] = None
@@ -194,6 +197,65 @@ class GooseService:
         with self._streams_lock:
             return list(self._streams.values())
 
+    def list_recent(self) -> List[Dict[str, Any]]:
+        """Retourne la liste des flux récemment arrêtés (historique)."""
+        with self._streams_lock:
+            # On renvoie une copie superficielle pour éviter les modifications in-place.
+            return list(self._recent)
+
+    def stop_stream(self, stream_id: str) -> bool:
+        """Arrête un flux (ne plus l'envoyer) mais le garde dans l'historique récent."""
+        with self._streams_lock:
+            s = self._streams.pop(stream_id, None)
+            if s is None:
+                return False
+            entry = _stream_to_dict(s)
+            # On ajoute en tête de liste et on tronque à 10 éléments.
+            self._recent.insert(0, entry)
+            self._recent = self._recent[:10]
+
+        self._save_state()
+        return True
+
+    def restart_from_recent(self, hist_id: str) -> bool:
+        """Relance un flux à partir de l'historique récent."""
+        with self._streams_lock:
+            entry = None
+            for e in self._recent:
+                if str(e.get("id")) == hist_id:
+                    entry = e
+                    break
+            if entry is None:
+                return False
+
+            now = time.monotonic()
+            all_data = _parse_all_data(entry.get("all_data", []))
+            s = GooseStream(
+                id=str(entry.get("id", str(uuid.uuid4()))),
+                iface=str(entry["iface"]),
+                src_mac=str(entry["src_mac"]),
+                dst_mac=str(entry["dst_mac"]),
+                app_id=int(entry["app_id"]),
+                vlan_id=entry.get("vlan_id"),
+                vlan_priority=entry.get("vlan_priority"),
+                gocb_ref=str(entry["gocb_ref"]),
+                dat_set=str(entry["dat_set"]),
+                go_id=str(entry["go_id"]),
+                ttl=int(entry.get("ttl", 5000)),
+                conf_rev=int(entry.get("conf_rev", 1)),
+                simulation=bool(entry.get("simulation", False)),
+                nds_com=bool(entry.get("nds_com", False)),
+                all_data=all_data,
+                st_num=int(entry.get("st_num", 1)),
+                sq_num=int(entry.get("sq_num", 0)),
+                next_send_time=now,
+                current_interval_ms=float(max(self.IEC_MIN_MS, 1)),
+            )
+            self._streams[s.id] = s
+
+        self._save_state()
+        return True
+
     # ------------------------------------------------------------------
     # Persistance simple sur disque
     # ------------------------------------------------------------------
@@ -208,7 +270,8 @@ class GooseService:
         try:
             with self._streams_lock:
                 streams = [_stream_to_dict(s) for s in self._streams.values()]
-            payload = {"streams": streams}
+                recent = list(self._recent)
+            payload = {"streams": streams, "recent": recent}
             tmp_path = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
             tmp_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
@@ -229,10 +292,12 @@ class GooseService:
             return
 
         streams_data = raw.get("streams") or []
+        recent_data = raw.get("recent") or []
         now = time.monotonic()
 
         with self._streams_lock:
             self._streams.clear()
+            self._recent = []
             for item in streams_data:
                 try:
                     all_data = _parse_all_data(item.get("all_data", []))
@@ -260,6 +325,11 @@ class GooseService:
                     self._streams[s.id] = s
                 except Exception:
                     continue
+            # Recharge l'historique récent tel quel (les conversions auront lieu
+            # au moment d'une éventuelle relance).
+            for e in recent_data:
+                if isinstance(e, dict):
+                    self._recent.append(e)
 
     def _sender_loop(self) -> None:
         while not self._stop.wait(0.01):
@@ -454,6 +524,20 @@ def make_web_handler(service: GooseService) -> type:
                     service.delete_stream(stream_id)
                     self._redirect("/streams")
                     return
+            elif path.startswith("/streams/") and path.endswith("/stop"):
+                parts = path.split("/")
+                if len(parts) >= 3 and parts[2]:
+                    stream_id = parts[2]
+                    service.stop_stream(stream_id)
+                    self._redirect("/streams")
+                    return
+            elif path.startswith("/recent/") and path.endswith("/restart"):
+                parts = path.split("/")
+                if len(parts) >= 3 and parts[2]:
+                    hist_id = parts[2]
+                    service.restart_from_recent(hist_id)
+                    self._redirect("/streams")
+                    return
 
             self._send_not_found()
 
@@ -461,6 +545,8 @@ def make_web_handler(service: GooseService) -> type:
 
         def _render_streams_list(self) -> None:
             streams = service.list_streams()
+            recent = service.list_recent()
+
             rows = []
             for s in streams:
                 rows.append(
@@ -473,6 +559,10 @@ def make_web_handler(service: GooseService) -> type:
                     f"<td>"
                     f"<a href=\"/streams/{s.id}/edit\">Modifier</a>"
                     f" | "
+                    f"<form method=\"POST\" action=\"/streams/{s.id}/stop\" style=\"display:inline\" onsubmit=\"return confirm('Arrêter ce flux ?');\">"
+                    f"<button type=\"submit\">Arrêter</button>"
+                    f"</form>"
+                    f" | "
                     f"<form method=\"POST\" action=\"/streams/{s.id}/delete\" style=\"display:inline\" onsubmit=\"return confirm('Supprimer ce flux ?');\">"
                     f"<button type=\"submit\">Supprimer</button>"
                     f"</form>"
@@ -480,6 +570,27 @@ def make_web_handler(service: GooseService) -> type:
                     f"</tr>"
                 )
             rows_html = "\n".join(rows) if rows else "<tr><td colspan=\"6\">Aucun flux</td></tr>"
+
+            recent_rows: List[str] = []
+            for r in recent:
+                rid = r.get("id", "")
+                recent_rows.append(
+                    f"<tr>"
+                    f"<td>{rid}</td>"
+                    f"<td>{r.get('gocb_ref', '')}</td>"
+                    f"<td>{r.get('go_id', '')}</td>"
+                    f"<td>{r.get('st_num', '')}</td>"
+                    f"<td>{r.get('sq_num', '')}</td>"
+                    f"<td>"
+                    f"<form method=\"POST\" action=\"/recent/{rid}/restart\" style=\"display:inline\">"
+                    f"<button type=\"submit\">Relancer</button>"
+                    f"</form>"
+                    f"</td>"
+                    f"</tr>"
+                )
+            recent_rows_html = (
+                "\n".join(recent_rows) if recent_rows else "<tr><td colspan=\"6\">Aucun flux récent</td></tr>"
+            )
 
             html = f"""<!DOCTYPE html>
 <html lang="fr">
@@ -509,6 +620,23 @@ def make_web_handler(service: GooseService) -> type:
     </thead>
     <tbody>
       {rows_html}
+    </tbody>
+  </table>
+
+  <h2>Flux récemment arrêtés</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>gocbRef</th>
+        <th>goID</th>
+        <th>stNum</th>
+        <th>sqNum</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {recent_rows_html}
     </tbody>
   </table>
 </body>
