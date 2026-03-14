@@ -1,6 +1,7 @@
 """Service GOOSE : envoi continu de flux GOOSE avec API HTTP."""
 from __future__ import annotations
 
+import html as html_module
 import json
 import threading
 import time
@@ -561,25 +562,26 @@ def make_unified_handler(service: GooseService) -> type:
             streams = service.list_streams()
             recent = service.list_recent()
 
+            _e = html_module.escape
             rows = []
             for s in streams:
                 rows.append(
                     f"<tr>"
-                    f"<td>{s.id}</td>"
-                    f"<td>{s.gocb_ref}</td>"
-                    f"<td>{s.go_id}</td>"
-                    f"<td>{s.src_mac}</td>"
-                    f"<td>{s.dst_mac}</td>"
-                    f"<td>"
-                    f"<a href=\"/streams/{s.id}/edit\">Modifier</a>"
-                    f" | "
-                    f"<form method=\"POST\" action=\"/streams/{s.id}/delete\" style=\"display:inline\" onsubmit=\"return confirm('Supprimer ce flux ?');\">"
-                    f"<button type=\"submit\">Supprimer</button>"
+                    f"<td>{_e(s.id)}</td>"
+                    f"<td>{_e(s.gocb_ref)}</td>"
+                    f"<td>{_e(s.go_id)}</td>"
+                    f"<td>{_e(s.src_mac)}</td>"
+                    f"<td>{_e(s.dst_mac)}</td>"
+                    f"<td class=\"actions\">"
+                    f"<a href=\"/streams/{_e(s.id)}/edit\" class=\"btn btn--accent\">Modifier</a>"
+                    f" "
+                    f"<form method=\"POST\" action=\"/streams/{_e(s.id)}/delete\" style=\"display:inline\" onsubmit=\"return confirm('Supprimer ce flux ?');\">"
+                    f"<button type=\"submit\" class=\"btn btn--danger\">Supprimer</button>"
                     f"</form>"
                     f"</td>"
                     f"</tr>"
                 )
-            rows_html = "\n".join(rows) if rows else "<tr><td colspan=\"6\">Aucun flux</td></tr>"
+            rows_html = "\n".join(rows) if rows else '<tr><td colspan="6" class="empty">Aucun flux</td></tr>'
 
             recent_rows: List[str] = []
             active_grefs = {s.gocb_ref for s in streams}
@@ -589,55 +591,79 @@ def make_unified_handler(service: GooseService) -> type:
                 can_restart = gref not in active_grefs and bool(gref)
                 if can_restart:
                     action_html = (
-                        f"<form method=\"POST\" action=\"/recent/{rid}/restart\" style=\"display:inline\">"
-                        f"<button type=\"submit\">Relancer</button>"
+                        f"<form method=\"POST\" action=\"/recent/{_e(rid)}/restart\" style=\"display:inline\">"
+                        f"<button type=\"submit\" class=\"btn btn--accent\">Relancer</button>"
                         f"</form>"
                     )
                 else:
-                    action_html = "<span style=\"color:#888\">Déjà actif</span>"
+                    action_html = '<span class="muted">Déjà actif</span>'
 
                 # Détails complets du flux au format JSON pretty-printed.
                 details_json = json.dumps(r, ensure_ascii=False, indent=2)
-                # Échappage minimal pour HTML.
-                details_html = (
-                    details_json.replace("&", "&amp;")
-                    .replace("<", "&lt;")
-                    .replace(">", "&gt;")
-                )
+                details_html = html_module.escape(details_json)
                 action_html += (
-                    "<br><details><summary>Détails</summary>"
+                    "<br><details class=\"details-row\"><summary>Détails</summary>"
                     f"<pre>{details_html}</pre></details>"
                 )
 
                 recent_rows.append(
                     f"<tr>"
-                    f"<td>{rid}</td>"
-                    f"<td>{gref}</td>"
-                    f"<td>{r.get('go_id', '')}</td>"
-                    f"<td>{r.get('src_mac', '')}</td>"
-                    f"<td>{r.get('dst_mac', '')}</td>"
-                    f"<td>{action_html}</td>"
+                    f"<td>{_e(rid)}</td>"
+                    f"<td>{_e(gref)}</td>"
+                    f"<td>{_e(r.get('go_id', ''))}</td>"
+                    f"<td>{_e(r.get('src_mac', ''))}</td>"
+                    f"<td>{_e(r.get('dst_mac', ''))}</td>"
+                    f"<td class=\"actions\">{action_html}</td>"
                     f"</tr>"
                 )
             recent_rows_html = (
-                "\n".join(recent_rows) if recent_rows else "<tr><td colspan=\"6\">Aucun flux récent</td></tr>"
+                "\n".join(recent_rows) if recent_rows else '<tr><td colspan="6" class="empty">Aucun flux récent</td></tr>'
             )
 
             html = f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GOOSE - Flux configurés</title>
   <style>
-    body {{ font-family: sans-serif; margin: 1rem 2rem; }}
-    table {{ border-collapse: collapse; width: 100%; max-width: 1200px; }}
-    th, td {{ border: 1px solid #ccc; padding: 0.3rem 0.5rem; text-align: left; }}
-    th {{ background: #f0f0f0; }}
-    a, button {{ font-size: 0.9rem; }}
+    :root {{
+      --bg: #1a1b26;
+      --surface: #24283b;
+      --text: #c0caf5;
+      --muted: #565f89;
+      --accent: #7aa2f7;
+      --danger: #f7768e;
+      --success: #9ece6a;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem 2rem; }}
+    h1 {{ margin: 0 0 0.5rem; font-size: 1.5rem; }}
+    h2 {{ font-size: 1rem; margin: 1.5rem 0 0.5rem; color: var(--muted); }}
+    a {{ color: var(--accent); text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .btn {{ display: inline-block; padding: 0.35rem 0.7rem; border-radius: 4px; font-size: 0.85rem; cursor: pointer; border: none; font-family: inherit; text-decoration: none; }}
+    .btn--accent {{ background: var(--accent); color: var(--bg); }}
+    .btn--accent:hover {{ opacity: 0.9; text-decoration: none; }}
+    .btn--danger {{ background: var(--danger); color: var(--bg); }}
+    .btn--danger:hover {{ opacity: 0.9; }}
+    .muted {{ color: var(--muted); font-size: 0.9rem; }}
+    .toolbar {{ display: flex; gap: 0.5rem; margin-bottom: 1rem; }}
+    table {{ width: 100%; max-width: 1200px; border-collapse: collapse; background: var(--surface); border-radius: 8px; overflow: hidden; }}
+    th, td {{ padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.06); }}
+    th {{ background: rgba(0,0,0,0.2); font-weight: 600; color: var(--text); }}
+    td.actions {{ white-space: nowrap; }}
+    .recents-section {{ margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--muted); }}
+    .details-row summary {{ cursor: pointer; color: var(--accent); font-size: 0.9rem; }}
+    .details-row pre {{ background: rgba(0,0,0,0.3); padding: 0.5rem; border-radius: 4px; font-size: 0.8rem; overflow-x: auto; margin: 0.25rem 0 0; }}
+    .empty {{ color: var(--muted); font-style: italic; }}
   </style>
 </head>
 <body>
   <h1>Flux GOOSE configurés</h1>
+  <div class="toolbar">
+    <a href="/streams" class="btn btn--accent">Actualiser</a>
+  </div>
   <table>
     <thead>
       <tr>
@@ -654,22 +680,24 @@ def make_unified_handler(service: GooseService) -> type:
     </tbody>
   </table>
 
-  <h2>Flux récemment configurés</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>gocbRef</th>
-        <th>goID</th>
-        <th>src_mac</th>
-        <th>dst_mac</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {recent_rows_html}
-    </tbody>
-  </table>
+  <section class="recents-section">
+    <h2>Flux récemment configurés</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>gocbRef</th>
+          <th>goID</th>
+          <th>src_mac</th>
+          <th>dst_mac</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {recent_rows_html}
+      </tbody>
+    </table>
+  </section>
 </body>
 </html>
 """
@@ -682,46 +710,69 @@ def make_unified_handler(service: GooseService) -> type:
                 return
 
             all_data_json = json.dumps(_stream_to_dict(s)["all_data"], ensure_ascii=False, indent=2)
+            _e = html_module.escape
 
             html = f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <title>Modifier le flux {stream_id}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Modifier le flux {_e(stream_id)}</title>
   <style>
-    body {{ font-family: sans-serif; margin: 1rem 2rem; max-width: 1000px; }}
-    label {{ display: block; margin-top: 0.5rem; font-weight: bold; }}
-    input[type=text], textarea {{ width: 100%; box-sizing: border-box; }}
-    textarea {{ height: 10rem; font-family: monospace; font-size: 0.85rem; }}
-    .readonly {{ background: #f5f5f5; }}
+    :root {{
+      --bg: #1a1b26;
+      --surface: #24283b;
+      --text: #c0caf5;
+      --muted: #565f89;
+      --accent: #7aa2f7;
+      --danger: #f7768e;
+      --success: #9ece6a;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem 2rem; max-width: 900px; }}
+    h1 {{ margin: 0 0 1rem; font-size: 1.5rem; }}
+    a {{ color: var(--accent); text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .btn {{ display: inline-block; padding: 0.35rem 0.7rem; border-radius: 4px; font-size: 0.9rem; cursor: pointer; border: none; font-family: inherit; text-decoration: none; }}
+    .btn--accent {{ background: var(--accent); color: var(--bg); }}
+    .btn--accent:hover {{ opacity: 0.9; text-decoration: none; }}
+    .details-grid {{ display: grid; gap: 0.5rem; margin-bottom: 1rem; color: var(--muted); font-size: 0.9rem; }}
+    label {{ display: block; margin-top: 0.75rem; font-weight: 600; color: var(--text); }}
+    input[type=text], textarea {{ width: 100%; padding: 0.5rem 0.75rem; background: var(--surface); border: 1px solid var(--muted); border-radius: 4px; color: var(--text); font-family: inherit; }}
+    input:focus, textarea:focus {{ outline: none; border-color: var(--accent); }}
+    textarea {{ height: 12rem; font-family: monospace; font-size: 0.85rem; }}
+    .readonly {{ opacity: 0.8; cursor: not-allowed; }}
+    .form-actions {{ display: flex; gap: 0.5rem; margin-top: 1.5rem; }}
   </style>
 </head>
 <body>
   <h1>Modifier le flux</h1>
-  <p><strong>ID:</strong> {s.id}</p>
-  <p><strong>Interface:</strong> {s.iface} &nbsp; <strong>src_mac:</strong> {s.src_mac} &nbsp; <strong>dst_mac:</strong> {s.dst_mac}</p>
-  <p><strong>APPID:</strong> 0x{s.app_id:04X}</p>
+  <div class="details-grid">
+    <p><strong>ID:</strong> {_e(s.id)}</p>
+    <p><strong>Interface:</strong> {_e(s.iface)} &nbsp; <strong>src_mac:</strong> {_e(s.src_mac)} &nbsp; <strong>dst_mac:</strong> {_e(s.dst_mac)}</p>
+    <p><strong>APPID:</strong> 0x{s.app_id:04X}</p>
+  </div>
 
-  <form method="POST" action="/streams/{s.id}/edit">
+  <form method="POST" action="/streams/{_e(s.id)}/edit">
     <label>gocbRef</label>
-    <input type="text" name="gocb_ref" value="{s.gocb_ref}" class="readonly" readonly>
+    <input type="text" name="gocb_ref" value="{_e(s.gocb_ref)}" class="readonly" readonly>
 
     <label>datSet</label>
-    <input type="text" name="dat_set" value="{s.dat_set}" class="readonly" readonly>
+    <input type="text" name="dat_set" value="{_e(s.dat_set)}" class="readonly" readonly>
 
     <label>goID</label>
-    <input type="text" name="go_id" value="{s.go_id}" class="readonly" readonly>
+    <input type="text" name="go_id" value="{_e(s.go_id)}" class="readonly" readonly>
 
     <label>TTL (ms)</label>
     <input type="text" name="ttl" value="{s.ttl}">
 
     <label>allData (JSON, liste de valeurs et de ['raw', tag, hex])</label>
-    <textarea name="all_data_json">{all_data_json}</textarea>
+    <textarea name="all_data_json">{_e(all_data_json)}</textarea>
 
-    <p>
-      <button type="submit">Enregistrer</button>
-      <a href="/streams">Annuler</a>
-    </p>
+    <div class="form-actions">
+      <button type="submit" class="btn btn--accent">Enregistrer</button>
+      <a href="/streams" class="btn" style="background:var(--surface);color:var(--text);border:1px solid var(--muted)">Annuler</a>
+    </div>
   </form>
 </body>
 </html>
