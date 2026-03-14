@@ -638,8 +638,8 @@ def make_unified_handler(service: GooseService) -> type:
     }}
     * {{ box-sizing: border-box; }}
     body {{ background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem 2rem; }}
-    h1 {{ margin: 0 0 0.5rem; font-size: 1.5rem; }}
-    h2 {{ font-size: 1rem; margin: 1.5rem 0 0.5rem; color: var(--muted); }}
+    h1 {{ font-size: 1.5rem; font-weight: 600; margin: 0 0 1rem 0; color: var(--accent); }}
+    h2 {{ font-size: 1rem; font-weight: 600; margin: 0.75rem 0 0.5rem 0; color: var(--muted); }}
     a {{ color: var(--accent); text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
     .btn {{ display: inline-block; padding: 0.35rem 0.7rem; border-radius: 4px; font-size: 0.85rem; cursor: pointer; border: none; font-family: inherit; text-decoration: none; }}
@@ -730,7 +730,7 @@ def make_unified_handler(service: GooseService) -> type:
     }}
     * {{ box-sizing: border-box; }}
     body {{ background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem 2rem; max-width: 900px; }}
-    h1 {{ margin: 0 0 1rem; font-size: 1.5rem; }}
+    h1 {{ font-size: 1.5rem; font-weight: 600; margin: 0 0 1rem 0; color: var(--accent); }}
     a {{ color: var(--accent); text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
     .btn {{ display: inline-block; padding: 0.35rem 0.7rem; border-radius: 4px; font-size: 0.9rem; cursor: pointer; border: none; font-family: inherit; text-decoration: none; }}
